@@ -1,0 +1,10 @@
+{
+  "title": "기준 관리",
+  "pages": [
+    "confirmations",
+    "change-requests",
+    "traceability",
+    "sources",
+    "implementation-status"
+  ]
+}

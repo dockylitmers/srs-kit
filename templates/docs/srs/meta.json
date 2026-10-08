@@ -1,0 +1,14 @@
+{
+  "title": "요구사항 명세서",
+  "pages": [
+    "index",
+    "overview",
+    "glossary",
+    "information-architecture",
+    "features",
+    "policies",
+    "data",
+    "non-functional",
+    "baseline"
+  ]
+}

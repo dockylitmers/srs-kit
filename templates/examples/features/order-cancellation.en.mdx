@@ -1,0 +1,92 @@
+---
+title: "Order cancellation and refunds"
+description: "Rules for cancelling a paid order and refunding it (example page)"
+version: "2026-10-08"
+versionNote: "Cancellation deadline now counts from the payment date; boundary examples added"
+---
+
+{/* srs-kit example page. The values are made up for illustration, and the source IDs (SRC-…) only have meaning inside this example. */}
+
+## Purpose
+
+Customers cancel a paid order themselves from the order detail screen in the app and get a refund to the card they paid with. Orders that customers cannot cancel themselves are refunded by an admin from the admin console.
+
+## In scope
+
+- Customer cancels the whole order (order detail screen in the app)
+- Refund by cancelling the card payment
+- Returning coupons and points
+- Admin refunds (orders the customer cannot cancel)
+- Notification when a cancellation or refund completes (app push, email)
+
+## Not in this release
+
+- Partial cancellation: customers can only cancel the whole order. Refunds for part of an order are admin refunds.
+- Bank transfer or cash refunds: payments are card only, so refunds are card payment cancellations only.
+- Cancellation fees: none in this release.
+- A statistics screen for cancellation reasons
+
+## Rules
+
+| ID | Rule | Source |
+| --- | --- | --- |
+| CAN-01 | If the order status is `결제 완료` (paid), the customer can cancel the whole order until 23:59 KST on day 7, counting the payment date as day 1. Otherwise the order detail screen shows "고객센터로 문의해 주세요" (please contact customer support) instead of the cancel button. | SRC-002, SRC-009 |
+| CAN-02 | If the order status is `발급 완료` (issued), the customer cannot cancel it and only an admin can refund it. Otherwise CAN-01 applies. | SRC-002 |
+| CAN-03 | The refund amount is the full amount the customer paid by card. Coupon discounts and points used are not part of the refund amount; they are returned under CAN-04 and CAN-05. | SRC-003 |
+| CAN-04 | If the coupon is still valid at cancellation, it is returned with its original expiry. Otherwise it is not returned. | SRC-003 |
+| CAN-05 | All points used are returned at cancellation. If the points have expired, they can be used until 23:59 on day (proposed) 30, counting the return date as day 1. Otherwise they keep their original expiry. | SRC-005 |
+| CAN-06 | After the cancellation completes, the completion screen shows "카드사에 따라 영업일 3~7일 안에 환불됩니다" (refunds take 3 to 7 business days depending on the card issuer). | SRC-004 |
+| CAN-07 | If the admin has the `운영자` (operator) or `최고 관리자` (super admin) role, they can refund. Otherwise the refund button is hidden. A refund records a reason chosen from a list, who processed it, and the time. | SRC-006 |
+| CAN-08 | When a cancellation or refund completes, the customer is notified by app push and email. If the customer has turned off app push, only email is sent. Otherwise both are sent. | SRC-007 |
+
+### Status transitions
+
+| Current status | Who | Action | Next status |
+| --- | --- | --- | --- |
+| `결제 완료` (paid) | Customer (within the CAN-01 deadline) | Cancel | `취소 완료` (cancelled) |
+| `결제 완료` (paid) | Admin | Refund | `환불 완료` (refunded) |
+| `발급 완료` (issued) | Admin | Refund | `환불 완료` (refunded) |
+| `발급 완료` (issued) | Customer | Cancel | Not allowed |
+| `취소 완료`, `환불 완료` | Anyone | Cancel, refund | Not allowed |
+
+## Examples
+
+| Example | Rule | Given | When | Then |
+| --- | --- | --- | --- | --- |
+| E1 | CAN-01 | Paid 10/1 14:00, `결제 완료` | Customer cancels at 10/7 23:59 | The order is cancelled |
+| E2 | CAN-01 | Paid 10/1 14:00, `결제 완료` | Customer opens the order detail at 10/8 00:00 | No cancel button; "고객센터로 문의해 주세요" is shown |
+| E3 | CAN-01 | Paid 10/1 23:59, `결제 완료` | Customer cancels at 10/7 23:59 | The order is cancelled (the payment date is day 1 regardless of the time) |
+| E4 | CAN-02 | `발급 완료` | Customer opens the order detail | No cancel button |
+| E5 | CAN-03, CAN-04, CAN-05 | Item 30,000 KRW, coupon 5,000 KRW off (still valid), 2,000 points used, 23,000 KRW paid by card | Customer cancels | 23,000 KRW refunded to the card; the coupon and 2,000 points are returned |
+| E6 | CAN-04 | Coupon valid until 10/5 23:59 | Customer cancels on 10/6 | The coupon is not returned |
+| E7 | CAN-05 | Points valid until 10/5 23:59 | Customer cancels on 10/6 | 2,000 points are returned and can be used until (proposed) 11/4 23:59 |
+| E8 | CAN-06 | Order paid by card | Customer cancels | The completion screen shows "카드사에 따라 영업일 3~7일 안에 환불됩니다" |
+| E9 | CAN-07 | Admin with the `고객 지원` (customer support) role | Opens the order detail | No refund button |
+
+## Screens
+
+| Screen | Capture | Captured on |
+| --- | --- | --- |
+| Order detail: cancel button | `order-cancellation/order-detail-2026-10-08.png` | 2026-10-08 |
+| Cancellation complete | `order-cancellation/cancel-done-2026-10-08.png` | 2026-10-08 |
+| Admin order detail: refund | `order-cancellation/admin-refund-2026-10-08.png` | 2026-10-08 |
+
+## Open questions
+
+| No. | Question | Proposed answer | Basis | Answer |
+| --- | --- | --- | --- | --- |
+| 1 | When expired points are returned by a cancellation, how many days should the customer have to use them? | 30 days from the return date | Matches the "30 days before expiry" notice in the points expiry policy (SRC-005) | Waiting for the answer |
+
+## Confirmation record
+
+| Date | Version | Confirmed by (role) | How and where | Result |
+| --- | --- | --- | --- | --- |
+| 2026-10-02 | 2026-09-30 | Client operations lead | Comment on the "cancellation rules" request in the client communication tool | Changes requested: count the deadline to day 7 from the payment date instead of 168 hours from the payment time. Reflected in version 2026-10-08 |
+
+---
+
+## Developer notes
+
+- Order statuses and transitions: the order status document in the technical spec
+- Card payment cancellation: the payment provider's cancellation API document
+- Admin roles: the [permissions policy](../policies) page and the admin role document in the technical spec
