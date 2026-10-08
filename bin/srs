@@ -1,0 +1,1236 @@
+#!/usr/bin/env node
+'use strict';
+// srs — SRS 키트 명령줄 도구. Node.js 18 이상, 외부 의존성 없음.
+// 기준: STANDARD.md, 순서: PROCESS.md. 사용법: srs help
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+const KIT_DIR = path.resolve(__dirname, '..');
+const TEMPLATE_DIR = path.join(KIT_DIR, 'templates');
+const WEB_TEMPLATE_DIR = path.join(KIT_DIR, 'web', 'files');
+
+const DEFAULT_CONFIG = {
+  docsDir: 'docs/srs',
+  versionsDir: 'docs/srs-versions',
+  primaryLanguage: 'ko',
+  translations: ['en'],
+  requireTranslations: true,
+  // version이 없는 현재 페이지를 이 날짜로 본다(사이트의 기준 버전과 같게).
+  legacyVersion: null,
+  pages: {
+    sources: 'baseline/sources',
+    traceability: 'baseline/traceability',
+    glossary: 'glossary',
+  },
+  // 기능 페이지 양식(STANDARD 6절)을 검사할 폴더와 종류
+  formDirs: { features: 'feature', policies: 'policy' },
+  ruleIdPattern: '[A-Z][A-Z0-9]*(?:[-.][A-Z0-9]+)*-\\d{2,4}',
+  sourceIdPattern: 'SRC-\\d{3,4}',
+  // 문서 사이트 주소. 본문에서 이 주소로 시작하는 절대 링크를 찾는다.
+  docBasePaths: ['/docs/srs'],
+  reservedTopLevelNames: ['en', 'v'],
+  // 팀이 관리하는 페이지(고객사가 읽는 부분 규칙을 적용하지 않음). 경로 또는 "폴더/" 접두어
+  internalPages: ['baseline/'],
+  terms: { ko: [], en: [] },
+  allowTerms: [],
+  assets: { urlPrefix: '/srs-assets/', dir: null },
+};
+
+const STATUSES = ['draft', 'in-review', 'confirmed'];
+const PROPOSAL_MARK = { ko: '(제안)', en: '(proposed)' };
+
+// 절 이름(한국어, 영어). 제목이 이 말로 시작하면 그 절로 본다.
+const SECTIONS = {
+  purpose: ['목적', 'Purpose'],
+  included: ['포함', 'In scope'],
+  excluded: ['이번 출시에 없는 것', '제외', 'Not in this release', 'Out of scope'],
+  rules: ['규칙', '기능 요구사항', 'Rules', 'Functional requirements'],
+  examples: ['예시', 'Examples'],
+  screens: ['화면', 'Screens'],
+  appliesTo: ['적용 기능', 'Applies to'],
+  questions: ['확인 요청', 'Open questions'],
+  confirmations: ['확인 기록', 'Confirmation record'],
+  devNotes: ['개발 근거', 'Developer notes'],
+};
+const REQUIRED_SECTIONS = {
+  feature: ['purpose', 'included', 'excluded', 'rules', 'confirmations'],
+  policy: ['purpose', 'excluded', 'rules', 'confirmations'],
+};
+const SECTION_LABEL = {
+  purpose: '목적', included: '포함', excluded: '이번 출시에 없는 것', rules: '규칙',
+  confirmations: '확인 기록',
+};
+
+// 확인 기록의 "결과"가 이렇게 시작하면 그 버전을 고객사가 확인한 것으로 본다.
+const CONFIRMED_RESULT = /^(확인|수정 후 확인|기한 경과|CR-\d+\s*승인|confirmed|deadline passed|CR-\d+\s*approved)/i;
+const NOT_CONFIRMED_RESULT = /^(확인 안|확인 전|수정 요청|보류|changes requested|on hold)/i;
+
+// 쓰지 않는 말(STANDARD 5절). [정규식, 분류]
+const BANNED_TERMS = {
+  ko: [
+    ['확인\\s?필요', 'undecided'], ['TBD', 'undecided'], ['TODO', 'undecided'],
+    ['추후\\s?(결정|협의|확정)', 'undecided'], ['미정(?!산)', 'undecided'],
+    ['적절한', 'vague'], ['적절히', 'vague'], ['충분한', 'vague'], ['충분히', 'vague'],
+    ['신속한', 'vague'], ['신속하게', 'vague'], ['빠른', 'vague'], ['빠르게', 'vague'],
+    ['쉬운', 'vague'], ['쉽게', 'vague'], ['편리한', 'vague'], ['편리하게', 'vague'],
+    ['직관적', 'vague'], ['사용자\\s?친화', 'vague'], ['원활한', 'vague'], ['원활하게', 'vague'],
+    ['효율적', 'vague'], ['유연한', 'vague'], ['유연하게', 'vague'], ['다양한', 'vague'],
+    ['최적의', 'vague'], ['최대한', 'vague'],
+    ['가능한\\s?한', 'loophole'], ['가급적', 'loophole'], ['필요\\s?시', 'loophole'],
+    ['등등', 'openList'], ['기타\\s?등', 'openList'],
+  ],
+  en: [
+    ['TBD', 'undecided'], ['TBC', 'undecided'], ['TODO', 'undecided'],
+    ['to be (decided|confirmed|determined)', 'undecided'],
+    ['user[- ]friendly', 'vague'], ['intuitive', 'vague'], ['easy to use', 'vague'],
+    ['easily', 'vague'], ['quickly', 'vague'], ['fast', 'vague'], ['flexible', 'vague'],
+    ['efficient', 'vague'], ['seamless(ly)?', 'vague'], ['robust', 'vague'],
+    ['sufficient', 'vague'], ['adequate', 'vague'], ['appropriate(ly)?', 'vague'],
+    ['various', 'vague'],
+    ['as appropriate', 'loophole'], ['if possible', 'loophole'], ['as needed', 'loophole'],
+    ['where necessary', 'loophole'], ['as soon as possible', 'loophole'],
+    ['etc\\.?', 'openList'], ['and so on', 'openList'], ['but not limited to', 'openList'],
+  ],
+};
+// 고객사가 읽는 부분에서는 쉬운 말을 쓴다(STANDARD 5절). [정규식, 대신 쓸 말]
+const PLAIN_WORDS_KO = [
+  ['\\b(SMS|LMS|MMS)\\b', '문자'],
+  ['\\b[Pp]ush\\b', '앱 푸시'],
+  ['(?<!앱\\s?)푸시', '앱 푸시'],
+  ['\\b[Ee]-?mail\\b', '이메일'],
+  ['\\bOTP\\b', '인증번호'],
+];
+const ISSUE_REF = /(?:^|[\s(\[（])(#\d{1,6})\b|\b([\w.-]+\/[\w.-]+#\d+)\b/;
+const PROGRESS_HEADER = /^(구현\s?(여부|상태|현황)|진행\s?(상태|현황|률)|개발\s?(상태|현황)|작업\s?상태|Implementation(\s+status)?|Implemented\??|Progress|Dev(elopment)?\s+status)$/i;
+const CODE_IDENTIFIER = /^([a-z][a-z0-9]*[A-Z]\w*|[A-Z][a-z0-9]+[A-Z]\w*|[a-z0-9]+(_[a-z0-9]+)+|[A-Z0-9]+(_[A-Z0-9]+)+|\/api\/\S*|[\w-]+\(\))$/;
+
+const TERM_HINT = {
+  undecided: '(제안) 값을 쓰고 확인 요청에 올린다',
+  vague: '숫자나 눈으로 확인할 수 있는 결과로 쓴다',
+  loophole: '조건과 "아니면"을 쓴다',
+  openList: '전체 목록을 쓰고 나머지는 "이번 출시에 없는 것"에 둔다',
+  glossary: '용어집의 용어를 쓴다',
+  config: 'srs.config.json에서 금지한 말',
+};
+
+const SECRET_PATTERNS = [
+  [/AKIA[0-9A-Z]{16}/, 'AWS 액세스 키'],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, '개인 키'],
+  [/\b(?:sk|pk|rk)_(?:live|test)_[0-9A-Za-z]{10,}/, 'API 키'],
+  [/\b(?:live|test)_(?:sk|ck|gsk|gck)_[0-9A-Za-z]{10,}/, '결제 API 키'],
+  [/\bgh[pousr]_[0-9A-Za-z]{30,}/, 'GitHub 토큰'],
+  [/\bxox[abpr]-[0-9A-Za-z-]{10,}/, 'Slack 토큰'],
+  [/(password|passwd|비밀번호|비번)\s*[:=：]\s*\S{4,}/i, '비밀번호'],
+  [/\b(api[_-]?key|secret|access[_-]?token)\s*[:=：]\s*['"]?[0-9A-Za-z_\-]{16,}/i, '비밀값'],
+];
+
+const IMPL_DETAIL = /(?:^|[\s`(|])((?:apps|src|packages|lib|server|web)\/[\w./\[\]()-]+|[\w-]+\.(?:tsx|ts|jsx|js|py|java|kt|swift|prisma|sql))(?=$|[\s`),|:])/;
+const MANUAL_DATE_LINE = /^\s*(최종\s?(수정|업데이트|검토|확인)(일|일자)?|Last (updated|reviewed|modified))\s*[:：]/i;
+
+// ---------------------------------------------------------------- 공통
+
+function die(msg) {
+  process.stderr.write(`srs: ${msg}\n`);
+  process.exit(2);
+}
+
+function read(file) {
+  return fs.readFileSync(file, 'utf8');
+}
+
+function exists(p) {
+  return fs.existsSync(p);
+}
+
+function today() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function isDate(v) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v || '')) return false;
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+}
+
+function escapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function parseArgs(argv) {
+  const BOOL = new Set(['example', 'force', 'json', 'strict', 'help', 'verbose', 'all']);
+  const pos = [];
+  const opt = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '-h') opt.help = true;
+    else if (a.startsWith('--')) {
+      const eq = a.indexOf('=');
+      if (eq > 0) opt[a.slice(2, eq)] = a.slice(eq + 1);
+      else {
+        const key = a.slice(2);
+        if (BOOL.has(key)) opt[key] = true;
+        else if (i + 1 < argv.length) opt[key] = argv[++i];
+        else die(`--${key} 다음에 값이 없습니다`);
+      }
+    } else pos.push(a);
+  }
+  return { pos, opt };
+}
+
+function walk(dir, out = []) {
+  if (!exists(dir)) return out;
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (ent.name.startsWith('.')) continue;
+    const p = path.join(dir, ent.name);
+    if (ent.isDirectory()) walk(p, out);
+    else out.push(p);
+  }
+  return out;
+}
+
+function toPosix(p) {
+  return p.split(path.sep).join('/');
+}
+
+// 현재 폴더 아래면 상대 경로, 아니면 절대 경로로 보여 준다.
+function shown(p) {
+  const rel = path.relative(process.cwd(), p);
+  return toPosix(rel && !rel.startsWith('..') ? rel : p);
+}
+
+// ---------------------------------------------------------------- 설정
+
+function mergeConfig(base, user) {
+  const out = { ...base };
+  for (const [k, v] of Object.entries(user || {})) {
+    if (k === 'formDirs' || Array.isArray(v) || v === null || typeof v !== 'object') out[k] = v;
+    else out[k] = mergeConfig(base[k] || {}, v);
+  }
+  return out;
+}
+
+function findRoot(start) {
+  let dir = start;
+  for (;;) {
+    if (exists(path.join(dir, 'srs.config.json'))) return dir;
+    const up = path.dirname(dir);
+    if (up === dir) return start;
+    dir = up;
+  }
+}
+
+function loadConfig(opt) {
+  const root = path.resolve(opt.root || findRoot(process.cwd()));
+  const configPath = opt.config ? path.resolve(opt.config) : path.join(root, 'srs.config.json');
+  let user = {};
+  if (exists(configPath)) {
+    try {
+      user = JSON.parse(read(configPath));
+    } catch (e) {
+      die(`${configPath}: JSON을 읽을 수 없습니다 (${e.message})`);
+    }
+  } else if (opt.config) die(`설정 파일이 없습니다: ${configPath}`);
+  const cfg = mergeConfig(DEFAULT_CONFIG, user);
+  delete cfg.$comment;
+  cfg.root = root;
+  cfg.configPath = exists(configPath) ? configPath : null;
+  cfg.docsAbs = path.resolve(root, cfg.docsDir);
+  cfg.versionsAbs = path.resolve(root, cfg.versionsDir);
+  cfg.ruleIdRe = new RegExp(`^${cfg.ruleIdPattern}$`);
+  cfg.ruleIdGlobal = new RegExp(`(?<![\\w-])${cfg.ruleIdPattern}(?![\\w-])`, 'g');
+  cfg.sourceIdGlobal = new RegExp(`(?<![\\w-])${cfg.sourceIdPattern}(?![\\w-])`, 'g');
+  cfg.langs = [cfg.primaryLanguage, ...cfg.translations];
+  return cfg;
+}
+
+// ---------------------------------------------------------------- 페이지 읽기
+
+function parseFrontmatter(lines) {
+  if (lines[0] !== '---') return { fm: {}, end: -1 };
+  const fm = {};
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === '---') return { fm, end: i };
+    const m = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/.exec(lines[i]);
+    if (!m) continue;
+    let v = m[2].replace(/\s+#.*$/, '').trim();
+    if (/^".*"$/.test(v)) {
+      try {
+        v = JSON.parse(v);
+      } catch {
+        v = v.slice(1, -1);
+      }
+    } else if (/^'.*'$/.test(v)) v = v.slice(1, -1).replace(/''/g, "'");
+    fm[m[1]] = v;
+  }
+  return { fm, end: -1 };
+}
+
+function splitCells(line) {
+  const t = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  const cells = [];
+  let cur = '';
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] === '\\' && t[i + 1] === '|') {
+      cur += '|';
+      i++;
+    } else if (t[i] === '|') {
+      cells.push(cur.trim());
+      cur = '';
+    } else cur += t[i];
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+function sectionKey(title) {
+  const t = title.replace(/^[\d.\s]+/, '').trim().toLowerCase();
+  for (const [key, labels] of Object.entries(SECTIONS)) {
+    if (labels.some((l) => t.startsWith(l.toLowerCase()))) return key;
+  }
+  return null;
+}
+
+function analyzePage(file, cfg) {
+  const rel = toPosix(path.relative(cfg.docsAbs, file));
+  const base = path.basename(rel);
+  let lang = cfg.primaryLanguage;
+  let slug = rel.replace(/\.mdx?$/, '');
+  for (const t of cfg.translations) {
+    if (base.endsWith(`.${t}.mdx`) || base.endsWith(`.${t}.md`)) {
+      lang = t;
+      slug = rel.replace(new RegExp(`\\.${t}\\.mdx?$`), '');
+    }
+  }
+  const text = read(file);
+  return { file, rel, lang, slug, text, ...analyzeText(text) };
+}
+
+function analyzeText(text) {
+  const raw = text.split(/\r?\n/);
+  const { fm, end } = parseFrontmatter(raw);
+  const lines = [];
+  let fence = null;
+  let inComment = false;
+  for (let i = end + 1; i < raw.length; i++) {
+    const r = raw[i];
+    const n = i + 1;
+    if (!inComment) {
+      const f = /^\s*(```|~~~)/.exec(r);
+      if (f) {
+        if (!fence) fence = f[1];
+        else if (f[1] === fence) fence = null;
+        lines.push({ n, raw: r, code: '', text: '', inFence: true });
+        continue;
+      }
+    }
+    if (fence) {
+      lines.push({ n, raw: r, code: '', text: '', inFence: true });
+      continue;
+    }
+    let out = '';
+    let rest = r;
+    while (rest.length) {
+      if (inComment) {
+        const e = rest.indexOf('*/');
+        if (e < 0) rest = '';
+        else {
+          rest = rest.slice(e + 2).replace(/^\s*\}/, '');
+          inComment = false;
+        }
+      } else {
+        const s = rest.indexOf('{/*');
+        if (s < 0) {
+          out += rest;
+          rest = '';
+        } else {
+          out += rest.slice(0, s);
+          rest = rest.slice(s + 3);
+          inComment = true;
+        }
+      }
+    }
+    out = out.replace(/<!--.*?-->/g, '');
+    lines.push({ n, raw: r, code: out, text: out.replace(/`[^`]*`/g, '``'), inFence: false });
+  }
+
+  // 제목과 절
+  const headings = [];
+  let h2 = null;
+  let devNotesFrom = Infinity;
+  for (const l of lines) {
+    const m = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(l.code);
+    if (m && !l.inFence) {
+      const h = { level: m[1].length, title: m[2], n: l.n, key: sectionKey(m[2]) };
+      headings.push(h);
+      if (h.level <= 2) h2 = h;
+      if (h.key === 'devNotes' && devNotesFrom === Infinity) devNotesFrom = l.n;
+    }
+    l.section = h2 ? h2.key : null;
+    l.sectionTitle = h2 ? h2.title : null;
+  }
+
+  // 표
+  const tables = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const next = lines[i + 1];
+    if (l.inFence || !l.code.trim().startsWith('|') || !next) continue;
+    if (!/^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(next.code)) continue;
+    const table = { header: splitCells(l.code), rows: [], n: l.n, section: l.section, sectionTitle: l.sectionTitle };
+    let j = i + 2;
+    for (; j < lines.length && lines[j].code.trim().startsWith('|'); j++) {
+      table.rows.push({ cells: splitCells(lines[j].code).map((c) => c.replace(/`/g, '')), raw: splitCells(lines[j].code), n: lines[j].n });
+    }
+    tables.push(table);
+    i = j - 1;
+  }
+  return { fm, fmEnd: end, raw, lines, headings, tables, devNotesFrom };
+}
+
+function columnIndex(table, re) {
+  return table.header.findIndex((h) => re.test(h.replace(/`/g, '').trim()));
+}
+
+function loadPages(cfg) {
+  if (!exists(cfg.docsAbs)) die(`문서 폴더가 없습니다: ${cfg.docsAbs}`);
+  const files = walk(cfg.docsAbs).filter((f) => /\.mdx?$/.test(f));
+  const pages = files.map((f) => analyzePage(f, cfg));
+  const byKey = new Map(pages.map((p) => [`${p.lang}:${p.slug}`, p]));
+  return { pages, get: (slug, lang) => byKey.get(`${lang || cfg.primaryLanguage}:${slug}`) };
+}
+
+function isInternal(page, cfg) {
+  return (cfg.internalPages || []).some((p) => (p.endsWith('/') ? page.slug.startsWith(p) : page.slug === p));
+}
+
+function formKind(page, cfg) {
+  const dir = page.slug.split('/').slice(0, -1).join('/');
+  if (!(dir in cfg.formDirs)) return null;
+  if (path.basename(page.slug) === 'index') return null;
+  return cfg.formDirs[dir];
+}
+
+// 규칙 정의: 첫 열이 ID인 표(예시·확인 요청·확인 기록 절 제외), 또는 "### ID. 제목" 형태의 제목.
+// 팀 관리 페이지(internalPages)는 규칙을 정의하지 않는다.
+function extractRules(page, cfg) {
+  const rules = [];
+  if (isInternal(page, cfg)) return rules;
+  for (const t of page.tables) {
+    if (['examples', 'questions', 'confirmations'].includes(t.section)) continue;
+    if (!/^(ID|규칙 ID|요구사항 ID|Rule ID|Requirement ID)$/i.test((t.header[0] || '').trim())) continue;
+    const ruleCol = columnIndex(t, /^(규칙|요구사항|Rule|Requirement)$/i);
+    const srcCol = columnIndex(t, /^(출처|근거|Sources?)$/i);
+    for (const r of t.rows) {
+      const id = (r.cells[0] || '').trim();
+      if (!cfg.ruleIdRe.test(id)) continue;
+      rules.push({
+        id, n: r.n, kind: 'table', tableLine: t.n,
+        text: ruleCol >= 0 ? r.cells[ruleCol] || '' : r.cells.slice(1).join(' '),
+        sources: srcCol >= 0 ? r.cells[srcCol] || '' : null,
+      });
+    }
+  }
+  const heads = page.headings;
+  for (let i = 0; i < heads.length; i++) {
+    const h = heads[i];
+    if (h.level < 2) continue;
+    const m = new RegExp(`^(${cfg.ruleIdPattern})(?:[.:)]|\\s)`).exec(`${h.title} `);
+    if (!m) continue;
+    const endLine = heads.slice(i + 1).find((x) => x.level <= h.level)?.n ?? Infinity;
+    const body = page.lines.filter((l) => l.n > h.n && l.n < endLine && !l.inFence).map((l) => l.code).join('\n');
+    rules.push({ id: m[1], n: h.n, kind: 'heading', text: body, sources: null });
+  }
+  return rules;
+}
+
+function confirmationRows(page) {
+  const out = [];
+  for (const t of page.tables) {
+    if (t.section !== 'confirmations') continue;
+    const vCol = columnIndex(t, /^(버전|Version)$/i);
+    const rCol = columnIndex(t, /^(결과|Result)$/i);
+    if (vCol < 0 || rCol < 0) continue;
+    for (const r of t.rows) out.push({ version: (r.cells[vCol] || '').trim(), result: (r.cells[rCol] || '').trim(), n: r.n });
+  }
+  return out;
+}
+
+function lastConfirmedVersion(page) {
+  const ok = confirmationRows(page)
+    .filter((r) => isDate(r.version) && CONFIRMED_RESULT.test(r.result) && !NOT_CONFIRMED_RESULT.test(r.result))
+    .map((r) => r.version)
+    .sort();
+  return ok.length ? ok[ok.length - 1] : null;
+}
+
+function countProposals(page, lang) {
+  const mark = PROPOSAL_MARK[lang] || PROPOSAL_MARK.en;
+  let count = 0;
+  for (const l of page.lines) {
+    if (l.inFence || l.section === 'questions' || l.n >= page.devNotesFrom) continue;
+    count += l.code.split(mark).length - 1;
+  }
+  return count;
+}
+
+function pageVersion(page, cfg) {
+  return page.fm.version || cfg.legacyVersion || null;
+}
+
+// ---------------------------------------------------------------- check
+
+function runCheck(cfg, opt) {
+  const { pages, get } = loadPages(cfg);
+  const findings = [];
+  const add = (level, file, line, code, msg) => findings.push({ level, file, line, code, msg });
+  const relRoot = (abs) => toPosix(path.relative(cfg.root, abs));
+  const primary = pages.filter((p) => p.lang === cfg.primaryLanguage);
+  const docsRel = relRoot(cfg.docsAbs);
+
+  // 1. version과 형식
+  for (const p of pages) {
+    const v = p.fm.version;
+    if (!v) {
+      if (cfg.legacyVersion) add('warn', relRoot(p.file), 1, 'version-missing', `version이 없습니다. 사이트는 ${cfg.legacyVersion}로 봅니다. 다음에 고칠 때 srs bump로 넣는다`);
+      else add('error', relRoot(p.file), 1, 'version-missing', 'frontmatter에 version: "YYYY-MM-DD"가 없습니다');
+    } else if (!isDate(v)) add('error', relRoot(p.file), 1, 'version-format', `version 형식이 YYYY-MM-DD가 아닙니다: ${v}`);
+    if (!p.fm.title) add('warn', relRoot(p.file), 1, 'title-missing', 'frontmatter에 title이 없습니다');
+  }
+
+  // 2. 번역 짝과 버전
+  const koVersionsBySlug = new Map();
+  for (const p of primary) koVersionsBySlug.set(p.slug, new Set([pageVersion(p, cfg)].filter(Boolean)));
+  for (const f of walk(cfg.versionsAbs)) {
+    const parts = toPosix(path.relative(cfg.versionsAbs, f)).split('/');
+    if (parts.length < 2 || !isDate(parts[0]) || !/\.mdx?$/.test(f)) continue;
+    const slug = parts.slice(1).join('/').replace(/\.mdx?$/, '');
+    if (cfg.translations.some((t) => slug.endsWith(`.${t}`))) continue;
+    if (!koVersionsBySlug.has(slug)) koVersionsBySlug.set(slug, new Set());
+    koVersionsBySlug.get(slug).add(parts[0]);
+  }
+  for (const p of primary) {
+    for (const t of cfg.translations) {
+      const tr = get(p.slug, t);
+      if (!tr) {
+        add(cfg.requireTranslations ? 'error' : 'warn', relRoot(p.file), 1, 'translation-missing', `${t} 번역 파일이 없습니다(${path.basename(p.rel).replace(/\.mdx?$/, `.${t}.mdx`)})`);
+        continue;
+      }
+      const kv = pageVersion(p, cfg);
+      const tv = pageVersion(tr, cfg);
+      if (!kv || !tv || !isDate(kv) || !isDate(tv)) continue;
+      if (tv > kv) add('error', relRoot(tr.file), 1, 'translation-ahead', `${t} version(${tv})이 원문(${kv})보다 늦습니다. 번역 version은 옮긴 원문 버전이다`);
+      else if (tv < kv) add('warn', relRoot(tr.file), 1, 'translation-stale', `번역이 ${tv} 기준입니다. 원문은 ${kv}. 번역을 고친 뒤 srs bump ${p.slug} --lang ${t}`);
+      if (tv < kv && !(koVersionsBySlug.get(p.slug) || new Set()).has(tv)) add('warn', relRoot(tr.file), 1, 'translation-unknown-version', `번역 version ${tv}에 해당하는 원문 버전(현재 또는 예전 버전)이 없습니다`);
+    }
+  }
+  for (const p of pages) {
+    if (p.lang !== cfg.primaryLanguage && !get(p.slug)) add('error', relRoot(p.file), 1, 'translation-orphan', '원문 파일이 없는 번역입니다');
+  }
+
+  // 3. meta.json
+  const dirs = new Set(pages.map((p) => path.dirname(p.file)));
+  for (const dir of dirs) {
+    const metaPath = path.join(dir, 'meta.json');
+    const children = new Set();
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (ent.isDirectory() && walk(path.join(dir, ent.name)).some((f) => /\.mdx?$/.test(f))) children.add(ent.name);
+      else if (ent.isFile() && /\.mdx?$/.test(ent.name) && !cfg.translations.some((t) => new RegExp(`\\.${t}\\.mdx?$`).test(ent.name))) children.add(ent.name.replace(/\.mdx?$/, ''));
+    }
+    if (!exists(metaPath)) {
+      add('warn', relRoot(dir) + '/', 0, 'meta-missing', 'meta.json이 없습니다. 사이드바 순서를 정할 수 없습니다');
+    } else {
+      let meta;
+      try {
+        meta = JSON.parse(read(metaPath));
+      } catch (e) {
+        add('error', relRoot(metaPath), 1, 'meta-invalid', `JSON 오류: ${e.message}`);
+        meta = null;
+      }
+      if (meta && Array.isArray(meta.pages)) {
+        const listed = new Set();
+        let rest = false;
+        for (const entry of meta.pages) {
+          if (typeof entry !== 'string') continue;
+          if (entry.startsWith('---') || /^\[.*\]\(.*\)$/.test(entry)) continue;
+          if (entry === '...' || entry === 'z...a') {
+            rest = true;
+            continue;
+          }
+          const name = entry.replace(/^(\.\.\.|!)/, '');
+          listed.add(name);
+          if (!children.has(name)) add('error', relRoot(metaPath), 1, 'meta-unknown-page', `pages의 "${entry}"에 해당하는 페이지나 폴더가 없습니다`);
+        }
+        if (!rest) for (const c of children) if (!listed.has(c)) add('warn', relRoot(metaPath), 1, 'meta-unlisted', `"${c}"가 pages에 없어 사이드바에 나오지 않습니다`);
+      }
+      for (const t of cfg.translations) {
+        const tPath = path.join(dir, `meta.${t}.json`);
+        if (!exists(tPath)) {
+          add(cfg.requireTranslations ? 'warn' : 'info', relRoot(dir) + '/', 0, 'meta-translation-missing', `meta.${t}.json이 없습니다(폴더 제목 번역, title만 쓰면 된다)`);
+          continue;
+        }
+        try {
+          const tm = JSON.parse(read(tPath));
+          if (Array.isArray(tm.pages) && meta && Array.isArray(meta.pages)) {
+            const strip = (arr) => arr.filter((e) => typeof e === 'string' && !e.startsWith('---')).join('|');
+            if (strip(tm.pages) !== strip(meta.pages)) add('warn', relRoot(tPath), 1, 'meta-translation-pages', `pages가 meta.json과 다릅니다. pages를 지우면 meta.json 순서를 따른다`);
+          }
+        } catch (e) {
+          add('error', relRoot(tPath), 1, 'meta-invalid', `JSON 오류: ${e.message}`);
+        }
+      }
+    }
+  }
+
+  // 4. 최상위 예약어
+  if (exists(cfg.docsAbs)) {
+    for (const ent of fs.readdirSync(cfg.docsAbs)) {
+      const name = ent.replace(/(\.[a-z]{2})?\.mdx?$/, '');
+      if (cfg.reservedTopLevelNames.includes(name)) add('error', `${docsRel}/${ent}`, 0, 'reserved-name', `최상위 이름 "${name}"은 사이트 주소(영어·예전 버전)에 쓰여 쓸 수 없습니다`);
+    }
+  }
+
+  // 5. 링크, 제목·날짜 줄, 비밀값, 쓰지 않는 말
+  const glossaryAvoid = {};
+  for (const lang of cfg.langs) {
+    const g = get(cfg.pages.glossary, lang);
+    glossaryAvoid[lang] = [];
+    if (!g) continue;
+    for (const t of g.tables) {
+      const avoidCol = columnIndex(t, /^(쓰지 않는 말|Avoid)$/i);
+      if (avoidCol < 0) continue;
+      for (const r of t.rows) {
+        const term = (r.cells[0] || '').trim();
+        for (const a of (r.cells[avoidCol] || '').split(/[,、]/).map((s) => s.trim()).filter(Boolean)) glossaryAvoid[lang].push([a, term]);
+      }
+    }
+  }
+  const allow = new Set(cfg.allowTerms || []);
+  const termRes = {};
+  for (const lang of cfg.langs) {
+    const list = [];
+    const base = BANNED_TERMS[lang] || BANNED_TERMS.en;
+    const wb = lang === 'en';
+    for (const [src, cat] of base) list.push({ re: new RegExp(wb ? `\\b${src}(?![\\w-])` : src, wb ? 'gi' : 'g'), cat, hint: TERM_HINT[cat] });
+    if (lang === 'ko') for (const [src, repl] of PLAIN_WORDS_KO) list.push({ re: new RegExp(src, 'g'), cat: 'plain', hint: `고객사가 읽는 글에는 쉬운 말로 쓴다: "${repl}"`, customerOnly: true, code: 'term-plain' });
+    for (const t of (cfg.terms && cfg.terms[lang]) || []) list.push({ re: new RegExp(wb ? `\\b${escapeRe(t)}\\b` : escapeRe(t), wb ? 'gi' : 'g'), cat: 'config', hint: TERM_HINT.config });
+    for (const [a, term] of glossaryAvoid[lang] || []) list.push({ re: new RegExp(wb ? `\\b${escapeRe(a)}\\b` : escapeRe(a), wb ? 'gi' : 'g'), cat: 'glossary', hint: `용어집 용어 "${term}"을 쓴다`, glossary: true });
+    termRes[lang] = list;
+  }
+
+  const assetsDir = cfg.assets && cfg.assets.dir ? path.resolve(cfg.root, cfg.assets.dir) : null;
+  for (const p of pages) {
+    const fileRel = relRoot(p.file);
+    const internal = isInternal(p, cfg);
+    const customer = (l) => !internal && l.n < p.devNotesFrom;
+    const capped = (code, n, msg, total) => {
+      total.count++;
+      if (total.count <= 3) add('warn', fileRel, n, code, msg);
+    };
+    const tallies = { 'impl-detail': { count: 0 }, 'code-identifier': { count: 0 }, 'issue-ref': { count: 0 } };
+    if (!internal) {
+      for (const t of p.tables) {
+        if (t.n >= p.devNotesFrom) continue;
+        for (const h of t.header) if (PROGRESS_HEADER.test(h.replace(/`/g, '').trim())) add('warn', fileRel, t.n, 'progress-column', `고객사가 읽는 표에 진행 상태 열("${h}")이 있습니다. 진행 상태는 구현 상태 페이지에만 쓴다`);
+      }
+    }
+    for (const l of p.raw.map((r, i) => ({ r, n: i + 1 }))) {
+      for (const [re, what] of SECRET_PATTERNS) if (re.test(l.r)) add('error', fileRel, l.n, 'secret', `${what}로 보이는 값이 있습니다. SRS에는 위치와 항목 이름만 쓴다`);
+    }
+    for (const l of p.lines) {
+      if (l.inFence) continue;
+      if (/^#\s+\S/.test(l.code)) add('warn', fileRel, l.n, 'h1-in-body', '본문에 "# 제목"을 쓰지 않는다. 제목은 frontmatter title');
+      if (MANUAL_DATE_LINE.test(l.text)) add('warn', fileRel, l.n, 'manual-date', '"최종 수정일" 줄을 쓰지 않는다. 날짜는 frontmatter version');
+      const linkRe = /(!?)\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+      let m;
+      while ((m = linkRe.exec(l.text))) {
+        const target = m[3];
+        if (/^(https?:|mailto:|tel:|#)/.test(target)) continue;
+        if (target.startsWith('/')) {
+          if (assetsDir && cfg.assets.urlPrefix && target.startsWith(cfg.assets.urlPrefix)) {
+            const f = path.join(assetsDir, decodeURI(target.slice(cfg.assets.urlPrefix.length)).split(/[?#]/)[0]);
+            if (!exists(f)) add('error', fileRel, l.n, 'broken-asset', `이미지·파일이 없습니다: ${target}`);
+          } else if ((cfg.docBasePaths || []).some((b) => target === b || target.startsWith(`${b}/`))) {
+            add('warn', fileRel, l.n, 'absolute-doc-link', `문서 사이 링크는 상대 경로로 쓴다: ${target}`);
+          }
+          continue;
+        }
+        const clean = decodeURI(target.split(/[?#]/)[0]);
+        if (!clean) continue;
+        const abs = path.resolve(path.dirname(p.file), clean);
+        const candidates = [abs, `${abs}.mdx`, `${abs}.md`, path.join(abs, 'index.mdx'), path.join(abs, 'index.md')];
+        if (!candidates.some((c) => exists(c) && (fs.statSync(c).isFile() || c === abs && exists(path.join(c, 'index.mdx'))))) {
+          add('error', fileRel, l.n, 'broken-link', `링크 대상이 없습니다: ${target}`);
+        }
+      }
+      for (const t of termRes[p.lang] || []) {
+        if (t.glossary && p.slug === cfg.pages.glossary) continue;
+        if (t.customerOnly && (!customer(l) || p.slug === cfg.pages.glossary)) continue;
+        if (/srs-ignore/.test(l.raw)) continue;
+        t.re.lastIndex = 0;
+        let tm;
+        while ((tm = t.re.exec(l.text))) {
+          if (allow.has(tm[0])) continue;
+          add('warn', fileRel, l.n, t.code || (t.glossary ? 'term-glossary' : 'term-banned'), `"${tm[0]}": ${t.hint}`);
+        }
+      }
+      if (/○○|\{\{[A-Z_]+\}\}/.test(l.code)) add('warn', fileRel, l.n, 'placeholder', '템플릿 자리 표시가 남아 있습니다');
+      if (customer(l)) {
+        const im = IMPL_DETAIL.exec(l.code);
+        if (im) capped('impl-detail', l.n, `고객사가 읽는 부분에 코드 경로가 있습니다("${im[1]}"). "개발 근거" 절로 옮긴다`, tallies['impl-detail']);
+        const codeRe = /`([^`]+)`/g;
+        let cm;
+        while ((cm = codeRe.exec(l.code))) {
+          if (CODE_IDENTIFIER.test(cm[1].trim())) capped('code-identifier', l.n, `고객사가 읽는 부분에 코드 이름("${cm[1]}")이 있습니다. 화면에 보이는 말로 쓴다`, tallies['code-identifier']);
+        }
+        const ir = ISSUE_REF.exec(l.text);
+        if (ir && !/^\s*#/.test(l.code)) capped('issue-ref', l.n, `고객사가 읽는 부분에 이슈 번호("${ir[1] || ir[2]}")가 있습니다. 출처는 출처 ID로 단다`, tallies['issue-ref']);
+      }
+    }
+    for (const [code, t] of Object.entries(tallies)) if (t.count > 3) add('warn', fileRel, 1, code, `같은 문제가 ${t.count - 3}곳 더 있습니다`);
+  }
+
+  // 6. 규칙, 양식, 확인
+  const ruleOwner = new Map();
+  const allRules = [];
+  const noSourceTables = new Set();
+  for (const p of primary) {
+    const fileRel = relRoot(p.file);
+    const rules = extractRules(p, cfg);
+    const kind = formKind(p, cfg);
+    if (p.fm.code && !/^[A-Z][A-Z0-9]{1,4}$/.test(p.fm.code)) add('error', fileRel, 1, 'code-format', `code는 영문 대문자 2~5자다: ${p.fm.code}`);
+    for (const r of rules) {
+      allRules.push({ ...r, page: p });
+      if (ruleOwner.has(r.id)) add('error', fileRel, r.n, 'rule-duplicate', `규칙 ID ${r.id}가 ${relRoot(ruleOwner.get(r.id).file)}에도 있습니다`);
+      else ruleOwner.set(r.id, p);
+      if (p.fm.code && !r.id.startsWith(`${p.fm.code}-`)) add('warn', fileRel, r.n, 'rule-id-prefix', `규칙 ID ${r.id}가 이 페이지 code(${p.fm.code})로 시작하지 않습니다`);
+      if (r.kind === 'table' && r.sources === null) {
+        if (!noSourceTables.has(`${fileRel}:${r.tableLine}`)) add('warn', fileRel, r.tableLine, 'rule-table-no-source', '규칙 표에 "출처" 열이 없습니다');
+        noSourceTables.add(`${fileRel}:${r.tableLine}`);
+      } else if (r.kind === 'table') {
+        const src = r.sources.trim();
+        if (!src || /^[-—]$/.test(src)) add('warn', fileRel, r.n, 'rule-no-source', `${r.id}: 출처가 없습니다`);
+      }
+      // "~하면"에는 "아니면"
+      const plain = r.text.replace(cfg.ruleIdGlobal, '').replace(cfg.sourceIdGlobal, '');
+      const isKo = p.lang === 'ko';
+      const cond = isKo ? /(하면|이면|되면|으면|라면|경우)/ : /\b(if|when|unless)\b/i;
+      const other = isKo ? /(아니면|않으면|않는 경우|아닌 경우|그 외|외에는|나머지|그렇지 않|이 밖의)/ : /\b(otherwise|else|if not|in all other cases|in any other case)\b/i;
+      if (kind && r.kind === 'table' && cond.test(plain) && !other.test(plain)) add('warn', fileRel, r.n, 'rule-if-without-else', `${r.id}: 조건("~하면")이 있는데 "아니면"이 없습니다`);
+      // 숫자가 있는 규칙에는 예시
+      const numeric = /\d/.test(plain.replace(PROPOSAL_MARK.ko, '').replace(/\d{4}-\d{2}-\d{2}/g, 'DATE'));
+      if (kind && numeric) {
+        const inExamples = p.lines.some((l) => l.section === 'examples' && l.code.includes(r.id));
+        if (!inExamples) add('warn', fileRel, r.n, 'rule-no-example', `${r.id}: 숫자가 있는 규칙인데 예시 표에 이 규칙의 행이 없습니다`);
+      }
+    }
+    if (!kind) continue;
+    // 양식
+    const present = new Set(p.headings.filter((h) => h.level === 2).map((h) => h.key));
+    for (const key of REQUIRED_SECTIONS[kind] || []) if (!present.has(key)) add('warn', fileRel, 1, 'section-missing', `"${SECTION_LABEL[key]}" 절이 없습니다`);
+    const status = p.fm.status;
+    if (!status) add('warn', fileRel, 1, 'status-missing', 'frontmatter에 status(draft | in-review | confirmed)가 없습니다');
+    else if (!STATUSES.includes(status)) add('error', fileRel, 1, 'status-invalid', `status는 draft | in-review | confirmed 중 하나다: ${status}`);
+    if (!p.fm.code && rules.some((r) => r.kind === 'table')) add('warn', fileRel, 1, 'code-missing', 'frontmatter에 code(규칙 ID 접두어)가 없습니다');
+    const proposals = countProposals(p, p.lang);
+    const version = pageVersion(p, cfg);
+    if (status === 'confirmed') {
+      if (proposals > 0) add('error', fileRel, 1, 'confirmed-with-proposal', `확인됨 페이지에 ${PROPOSAL_MARK.ko}이 ${proposals}개 남아 있습니다`);
+      const lc = lastConfirmedVersion(p);
+      if (lc !== version) add('error', fileRel, 1, 'confirmed-without-record', `확인됨인데 현재 버전(${version})의 확인 기록이 없습니다${lc ? ` (마지막 확인: ${lc})` : ''}`);
+    }
+  }
+
+  // 7. 출처 목록
+  const sourcesPage = get(cfg.pages.sources);
+  const sourceIds = new Set();
+  if (!sourcesPage) add('error', docsRel, 0, 'sources-missing', `출처 목록 페이지(${cfg.pages.sources})가 없습니다`);
+  else {
+    const fileRel = relRoot(sourcesPage.file);
+    let reflectTables = 0;
+    for (const t of sourcesPage.tables) {
+      const rCol = columnIndex(t, /(반영|Reflected|Used in)/i);
+      if (rCol < 0) continue;
+      reflectTables++;
+      const idCol = columnIndex(t, /^(ID|출처 ID|Source ID)$/i);
+      if (idCol < 0) add('warn', fileRel, t.n, 'source-no-id', '출처 표에 ID 열이 없습니다. 규칙의 "출처" 칸이 가리킬 수 없습니다');
+      for (const r of t.rows) {
+        const label = idCol >= 0 ? r.cells[idCol] : r.cells[0];
+        if (idCol >= 0) {
+          if (sourceIds.has(label)) add('error', fileRel, r.n, 'source-duplicate', `출처 ID ${label}가 중복됩니다`);
+          sourceIds.add(label);
+        }
+        const cell = (r.cells[rCol] || '').trim();
+        const rawCell = r.raw[rCol] || '';
+        if (!cell || /^([-—]|TBD|확인\s?필요|없음|미정)$/i.test(cell)) add('error', fileRel, r.n, 'source-unreflected', `${label}: 반영 위치가 비어 있습니다(반영할 내용이 없으면 "반영 없음: 이유")`);
+        else if (/^(반영 없음|Not reflected)/i.test(cell)) {
+          if (!/[:：]\s*\S/.test(cell)) add('warn', fileRel, r.n, 'source-no-reason', `${label}: "반영 없음" 뒤에 이유를 쓴다`);
+        } else if (!/\]\(/.test(rawCell)) add('warn', fileRel, r.n, 'source-no-link', `${label}: 반영 위치에 페이지 링크가 없습니다`);
+      }
+    }
+    if (!reflectTables) add('error', fileRel, 1, 'sources-no-table', '"반영 위치" 열이 있는 출처 표가 없습니다');
+    // 규칙이 가리키는 출처 ID
+    for (const r of allRules) {
+      if (!r.sources) continue;
+      cfg.sourceIdGlobal.lastIndex = 0;
+      for (const id of r.sources.match(cfg.sourceIdGlobal) || []) {
+        if (!sourceIds.has(id)) add('error', relRoot(r.page.file), r.n, 'rule-unknown-source', `${r.id}: 출처 ${id}가 출처 목록에 없습니다`);
+      }
+    }
+  }
+
+  // 8. 추적표
+  const tracePage = get(cfg.pages.traceability);
+  if (!tracePage) add('warn', docsRel, 0, 'trace-missing-page', `추적표 페이지(${cfg.pages.traceability})가 없습니다`);
+  else {
+    const traceIds = new Map();
+    for (const t of tracePage.tables) {
+      if (!/ID/i.test(t.header[0] || '')) continue;
+      for (const r of t.rows) {
+        const id = (r.cells[0] || '').trim();
+        if (cfg.ruleIdRe.test(id)) traceIds.set(id, r.n);
+      }
+    }
+    const fileRel = relRoot(tracePage.file);
+    for (const r of allRules) if (!traceIds.has(r.id)) add('warn', relRoot(r.page.file), r.n, 'trace-missing', `${r.id}가 추적표에 없습니다`);
+    for (const [id, n] of traceIds) if (!ruleOwner.has(id)) add('warn', fileRel, n, 'trace-unknown', `추적표의 ${id}를 정의한 페이지가 없습니다`);
+  }
+
+  // 9. 예전 버전
+  for (const f of walk(cfg.versionsAbs)) {
+    const relV = toPosix(path.relative(cfg.versionsAbs, f));
+    const parts = relV.split('/');
+    const fileRel = relRoot(f);
+    if (!isDate(parts[0])) {
+      add('error', fileRel, 0, 'snapshot-folder', `예전 버전 폴더 이름이 YYYY-MM-DD가 아닙니다: ${parts[0]}`);
+      continue;
+    }
+    if (parts.length < 2 || !/\.mdx?$/.test(f)) continue;
+    const date = parts[0];
+    const relPage = parts.slice(1).join('/');
+    let lang = cfg.primaryLanguage;
+    let slug = relPage.replace(/\.mdx?$/, '');
+    for (const t of cfg.translations) if (new RegExp(`\\.${t}\\.mdx?$`).test(relPage)) {
+      lang = t;
+      slug = relPage.replace(new RegExp(`\\.${t}\\.mdx?$`), '');
+    }
+    const cur = get(slug, lang);
+    if (!cur) {
+      add('info', fileRel, 0, 'snapshot-orphan', '현재 페이지가 없는 예전 버전입니다(사이트에 나오지 않음)');
+      continue;
+    }
+    const cv = pageVersion(cur, cfg);
+    if (!cv || !isDate(cv)) continue;
+    if (date > cv) add('error', fileRel, 0, 'snapshot-newer', `예전 버전 날짜(${date})가 현재 버전(${cv})보다 늦습니다`);
+    else if (date === cv && read(f) !== cur.text) add('warn', relRoot(cur.file), 1, 'edited-without-bump', `현재 버전(${cv})과 같은 날짜의 예전 버전과 내용이 다릅니다. 고치기 전에 srs bump를 하지 않은 것으로 보입니다`);
+  }
+
+  return { findings, pages, primary, allRules, sourceIds };
+}
+
+function printCheck(result, cfg, opt) {
+  const { findings, pages, primary, allRules, sourceIds } = result;
+  const levels = { error: 0, warn: 0, info: 0 };
+  for (const f of findings) levels[f.level]++;
+  if (opt.json) {
+    process.stdout.write(`${JSON.stringify({ root: cfg.root, summary: levels, findings }, null, 2)}\n`);
+    return levels;
+  }
+  const show = findings.filter((f) => f.level !== 'info' || opt.verbose);
+  const byFile = new Map();
+  for (const f of show) {
+    if (!byFile.has(f.file)) byFile.set(f.file, []);
+    byFile.get(f.file).push(f);
+  }
+  const limit = opt.verbose ? Infinity : Number(opt.limit || 5);
+  const mark = { error: '오류', warn: '경고', info: '참고' };
+  const out = [];
+  for (const file of [...byFile.keys()].sort()) {
+    out.push(file);
+    const list = byFile.get(file).sort((a, b) => (a.line || 0) - (b.line || 0));
+    const perCode = new Map();
+    for (const f of list) {
+      const c = perCode.get(f.code) || 0;
+      perCode.set(f.code, c + 1);
+      if (c < limit) out.push(`  ${String(f.line || '-').padStart(4)}  ${mark[f.level]}  [${f.code}] ${f.msg}`);
+    }
+    for (const [code, c] of perCode) if (c > limit) out.push(`        ...  [${code}] ${c - limit}건 더 (--verbose로 모두 보기)`);
+  }
+  const codeCount = new Map();
+  for (const f of findings) {
+    const k = `${f.level}:${f.code}`;
+    codeCount.set(k, (codeCount.get(k) || 0) + 1);
+  }
+  out.push('');
+  out.push(`검사: ${shown(cfg.docsAbs) || '.'} (설정: ${cfg.configPath ? shown(cfg.configPath) : '기본값'})`);
+  out.push(`페이지 ${primary.length}개(번역 포함 ${pages.length}개), 규칙 ID ${allRules.length}개, 출처 ID ${sourceIds.size}개`);
+  const order = { error: 0, warn: 1, info: 2 };
+  const rows = [...codeCount.entries()].sort((a, b) => order[a[0].split(':')[0]] - order[b[0].split(':')[0]] || b[1] - a[1]);
+  for (const [k, c] of rows) {
+    const [lv, code] = k.split(':');
+    out.push(`  ${mark[lv]} ${String(c).padStart(4)}  ${code}`);
+  }
+  out.push(`결과: 오류 ${levels.error}, 경고 ${levels.warn}${levels.info ? `, 참고 ${levels.info}` : ''}`);
+  process.stdout.write(`${out.join('\n')}\n`);
+  return levels;
+}
+
+// ---------------------------------------------------------------- status
+
+function runStatus(cfg, opt) {
+  const { pages, get } = loadPages(cfg);
+  const primary = pages.filter((p) => p.lang === cfg.primaryLanguage).sort((a, b) => a.slug.localeCompare(b.slug));
+  const rows = [];
+  const counts = { draft: 0, 'in-review': 0, confirmed: 0, recheck: 0 };
+  for (const p of primary) {
+    const kind = formKind(p, cfg);
+    const rules = extractRules(p, cfg);
+    if (!kind && !rules.length && !opt.all) continue;
+    const v = pageVersion(p, cfg) || '-';
+    const tr = cfg.translations.map((t) => {
+      const tp = get(p.slug, t);
+      if (!tp) return '없음';
+      const tv = pageVersion(tp, cfg);
+      return tv === v ? '같음' : `${tv} (뒤처짐)`;
+    });
+    const status = p.fm.status || '-';
+    const lc = lastConfirmedVersion(p);
+    if (counts[status] !== undefined) counts[status]++;
+    if (status === 'confirmed' && lc !== v) counts.recheck++;
+    rows.push([`[${p.fm.title || p.slug}](${relLink(p.slug)})`, p.slug, v, ...tr, status, String(countProposals(p, p.lang)), lc || '-', String(rules.length)]);
+  }
+  const header = ['페이지', '경로', '버전', ...cfg.translations.map((t) => `번역(${t})`), '상태', '(제안)', '마지막 확인', '규칙'];
+  const out = [];
+  out.push(`기준일: ${opt.date || today()}`);
+  out.push('');
+  out.push(`| ${header.join(' | ')} |`);
+  out.push(`| ${header.map(() => '---').join(' | ')} |`);
+  for (const r of rows) out.push(`| ${r.join(' | ')} |`);
+  out.push('');
+  out.push(`작성 중 ${counts.draft}, 확인 중 ${counts['in-review']}, 확인됨 ${counts.confirmed}${counts.recheck ? ` (그중 현재 버전 확인 기록 없음 ${counts.recheck})` : ''}`);
+  process.stdout.write(`${out.join('\n')}\n`);
+}
+
+function relLink(slug) {
+  // confirmations 페이지(baseline/)에 붙여 넣는 것을 기준으로 한 상대 링크
+  return `../${slug.replace(/\/index$/, '')}`;
+}
+
+// ---------------------------------------------------------------- frontmatter 쓰기
+
+function setFrontmatter(text, updates) {
+  const nl = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  let end = -1;
+  if (lines[0] === '---') end = lines.indexOf('---', 1);
+  if (end < 0) {
+    lines.unshift('---', '---');
+    end = 1;
+  }
+  for (const [key, value] of Object.entries(updates)) {
+    const idx = lines.slice(1, end).findIndex((l) => new RegExp(`^${key}\\s*:`).test(l));
+    if (value === null) {
+      if (idx >= 0) {
+        lines.splice(idx + 1, 1);
+        end--;
+      }
+      continue;
+    }
+    const line = `${key}: ${value}`;
+    if (idx >= 0) lines[idx + 1] = line;
+    else {
+      lines.splice(end, 0, line);
+      end++;
+    }
+  }
+  return lines.join(nl);
+}
+
+const yamlString = (s) => JSON.stringify(String(s));
+
+// ---------------------------------------------------------------- bump
+
+function resolvePageArg(arg, cfg) {
+  if (!arg) die('페이지를 주세요. 예: srs bump features/order-cancellation');
+  let p = arg.replace(/\\/g, '/');
+  const abs = path.resolve(process.cwd(), p);
+  if (exists(abs) && abs.startsWith(cfg.docsAbs)) p = toPosix(path.relative(cfg.docsAbs, abs));
+  p = p.replace(/^\.?\/?/, '').replace(new RegExp(`^${escapeRe(cfg.docsDir.replace(/\/$/, ''))}/`), '');
+  let lang = null;
+  for (const t of cfg.translations) if (new RegExp(`\\.${t}\\.mdx?$`).test(p)) {
+    lang = t;
+    p = p.replace(new RegExp(`\\.${t}\\.mdx?$`), '');
+  }
+  p = p.replace(/\.mdx?$/, '').replace(/\/$/, '');
+  const fileFor = (l) => {
+    for (const ext of ['.mdx', '.md']) {
+      const f = path.join(cfg.docsAbs, l === cfg.primaryLanguage ? `${p}${ext}` : `${p}.${l}${ext}`);
+      if (exists(f)) return f;
+      const idx = path.join(cfg.docsAbs, p, l === cfg.primaryLanguage ? `index${ext}` : `index.${l}${ext}`);
+      if (exists(idx)) return idx;
+    }
+    return null;
+  };
+  return { slug: p, lang, fileFor };
+}
+
+function snapshot(file, version, cfg, opt, log) {
+  const rel = path.relative(cfg.docsAbs, file);
+  const dest = path.join(cfg.versionsAbs, version, rel);
+  const relDest = toPosix(path.relative(cfg.root, dest));
+  if (exists(dest)) {
+    if (read(dest) === read(file)) {
+      log.push(`  이미 있음(같은 내용): ${relDest}`);
+      return true;
+    }
+    if (!opt.force) die(`${relDest}가 이미 있고 현재 파일과 내용이 다릅니다. 예전 버전 파일은 고치지 않는다. 확인 후 --force로 덮어쓴다`);
+  }
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(file, dest);
+  log.push(`  예전 버전 저장: ${relDest}`);
+  return true;
+}
+
+function runBump(cfg, pos, opt) {
+  const { slug, lang: fileLang, fileFor } = resolvePageArg(pos[0], cfg);
+  const lang = opt.lang || fileLang || cfg.primaryLanguage;
+  if (lang !== 'all' && !cfg.langs.includes(lang)) die(`--lang은 ${cfg.langs.join(', ')}, all 중 하나다`);
+  const primaryFile = fileFor(cfg.primaryLanguage);
+  if (!primaryFile) die(`페이지가 없습니다: ${cfg.docsDir}/${slug}.mdx`);
+  const log = [];
+  const primaryText = read(primaryFile);
+  const pfm = analyzeText(primaryText).fm;
+  if (pfm.version && opt.from && opt.from !== pfm.version) die(`--from은 version이 없는 파일에만 쓴다(지금 version: ${pfm.version})`);
+  const oldVersion = pfm.version || opt.from || cfg.legacyVersion;
+  if (!oldVersion) die(`${toPosix(path.relative(cfg.root, primaryFile))}에 version이 없습니다. 지금 내용의 날짜를 --from YYYY-MM-DD로 주거나 srs.config.json에 legacyVersion을 둔다`);
+  if (!isDate(oldVersion)) die(`지금 version 형식이 YYYY-MM-DD가 아닙니다: ${oldVersion}`);
+
+  const bumpTranslation = (t, target) => {
+    const tf = fileFor(t);
+    if (!tf) {
+      log.push(`  ${t} 파일 없음: 번역을 만들면 version을 ${target}로 둔다`);
+      return;
+    }
+    const tfm = analyzeText(read(tf)).fm;
+    const tv = tfm.version || cfg.legacyVersion;
+    if (tv === target) {
+      log.push(`  ${t}: 이미 ${target}`);
+      return;
+    }
+    if (tv && isDate(tv)) snapshot(tf, tv, cfg, opt, log);
+    const updates = { version: yamlString(target) };
+    if (opt['note-en'] || (opt.note && t !== cfg.primaryLanguage && lang === t)) updates.versionNote = yamlString(opt['note-en'] || opt.note);
+    else updates.versionNote = null;
+    fs.writeFileSync(tf, setFrontmatter(read(tf), updates));
+    log.push(`  ${t}: version ${tv || '(없음)'} → ${target}`);
+  };
+
+  if (lang !== 'all' && lang !== cfg.primaryLanguage) {
+    // 번역을 원문 버전에 맞춘다
+    if (opt.date && opt.date !== oldVersion) die(`번역 version은 원문 version(${oldVersion})과 같아야 한다. --date는 쓰지 않는다`);
+    bumpTranslation(lang, oldVersion);
+    process.stdout.write(`${slug} (${lang})\n${log.join('\n')}\n`);
+    return;
+  }
+
+  const newVersion = opt.date || today();
+  if (!isDate(newVersion)) die(`--date 형식이 YYYY-MM-DD가 아닙니다: ${newVersion}`);
+  if (newVersion === oldVersion) {
+    if (pfm.version) {
+      process.stdout.write(`${slug}: 이미 ${newVersion} 버전이다. 같은 날 고치는 것은 bump 없이 그대로 고친다\n`);
+      return;
+    }
+    // version 없이 기준 버전으로 보던 파일: 같은 버전이므로 예전 버전을 만들지 않고 version만 적는다
+    fs.writeFileSync(primaryFile, setFrontmatter(primaryText, { version: yamlString(newVersion) }));
+    process.stdout.write(`${slug}: version이 없어 ${oldVersion}로 보던 파일이다. 같은 버전이므로 version: "${newVersion}"만 적었다\n`);
+    return;
+  }
+  if (newVersion < oldVersion) die(`새 버전(${newVersion})이 지금 버전(${oldVersion})보다 이르다`);
+
+  snapshot(primaryFile, oldVersion, cfg, opt, log);
+  // 번역도 자기 version 폴더에 남긴다(이미 있으면 건너뜀). version은 번역을 마친 뒤 --lang으로 맞춘다.
+  for (const t of cfg.translations) {
+    const tf = fileFor(t);
+    if (!tf) continue;
+    const tv = analyzeText(read(tf)).fm.version || cfg.legacyVersion;
+    if (tv && isDate(tv)) snapshot(tf, tv, cfg, opt, log);
+  }
+  const updates = { version: yamlString(newVersion), versionNote: opt.note ? yamlString(opt.note) : null };
+  const wasConfirmed = pfm.status === 'confirmed';
+  if (wasConfirmed) updates.status = 'draft';
+  fs.writeFileSync(primaryFile, setFrontmatter(primaryText, updates));
+  log.push(`  ${cfg.primaryLanguage}: version ${pfm.version || `(없음, ${oldVersion}로 봄)`} → ${newVersion}`);
+  if (wasConfirmed) log.push('  status: confirmed → draft (고객사 확인을 다시 받는다. 확인 기록에 새 버전 행을 넣은 뒤 confirmed로)');
+  if (!opt.note) log.push('  versionNote를 지웠다. --note "바뀐 것 한 줄"로 남기는 것을 권장');
+  if (lang === 'all') for (const t of cfg.translations) bumpTranslation(t, newVersion);
+  else if (cfg.translations.length) log.push(`  번역은 그대로 두었다. 번역을 고친 뒤: srs bump ${slug} --lang ${cfg.translations[0]}`);
+  process.stdout.write(`${slug}\n${log.join('\n')}\n`);
+}
+
+// ---------------------------------------------------------------- 템플릿 복사
+
+function fillPlaceholders(text, vars) {
+  return text.replace(/\{\{([A-Z_]+)\}\}/g, (m, k) => (k in vars ? vars[k] : m));
+}
+
+function copyTree(src, dest, vars, log) {
+  for (const f of walk(src)) {
+    const out = path.join(dest, path.relative(src, f));
+    const label = toPosix(path.relative(log.base, out));
+    if (exists(out)) {
+      if (!log.created.includes(label)) log.skipped.push(label);
+      continue;
+    }
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    if (/\.(mdx?|json|tsx?|md)$/.test(f)) fs.writeFileSync(out, fillPlaceholders(read(f), vars));
+    else fs.copyFileSync(f, out);
+    log.created.push(label);
+  }
+}
+
+function addToMeta(dir, name) {
+  const metaPath = path.join(dir, 'meta.json');
+  if (!exists(metaPath)) return false;
+  const meta = JSON.parse(read(metaPath));
+  if (!Array.isArray(meta.pages)) return false;
+  if (meta.pages.includes(name)) return true;
+  meta.pages.push(name);
+  fs.writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`);
+  return true;
+}
+
+function runInit(pos, opt) {
+  const target = pos[0];
+  if (!target) die('저장소 폴더를 주세요. 예: srs init ../my-project --name "프로젝트"');
+  const root = path.resolve(target);
+  if (!exists(root)) die(`폴더가 없습니다: ${root}`);
+  const cfgFile = path.join(root, 'srs.config.json');
+  const userCfg = exists(cfgFile) ? JSON.parse(read(cfgFile)) : {};
+  const docsDir = opt.docs || userCfg.docsDir || DEFAULT_CONFIG.docsDir;
+  const docsAbs = path.resolve(root, docsDir);
+  const date = opt.date || today();
+  if (!isDate(date)) die(`--date 형식이 YYYY-MM-DD가 아닙니다: ${date}`);
+  const name = opt.name || path.basename(root);
+  if (exists(docsAbs) && fs.readdirSync(docsAbs).length && !opt.force) {
+    die(`${shown(docsAbs)}가 이미 있습니다. 없는 파일만 채우려면 --force (있는 파일은 덮어쓰지 않는다)`);
+  }
+  const vars = { PROJECT_NAME: name, DATE: date };
+  const log = { created: [], skipped: [], base: root };
+  if (opt.example) {
+    // 예시 파일이 먼저 들어가고, 같은 이름의 빈 뼈대 파일은 건너뛴다.
+    copyTree(path.join(TEMPLATE_DIR, 'examples'), docsAbs, vars, log);
+  }
+  copyTree(path.join(TEMPLATE_DIR, 'docs', 'srs'), docsAbs, vars, log);
+  if (opt.example) addToMeta(path.join(docsAbs, 'features'), 'order-cancellation');
+  if (!exists(cfgFile)) {
+    const cfg = JSON.parse(read(path.join(TEMPLATE_DIR, 'srs.config.json')));
+    cfg.docsDir = docsDir;
+    fs.writeFileSync(cfgFile, `${JSON.stringify(cfg, null, 2)}\n`);
+    log.created.push('srs.config.json');
+  } else log.skipped.push('srs.config.json');
+  if (opt.web) {
+    const webAbs = path.resolve(root, opt.web);
+    if (!exists(webAbs)) die(`앱 폴더가 없습니다: ${webAbs}`);
+    const webVars = {
+      ...vars,
+      DOCS_DIR_FROM_APP: toPosix(path.relative(webAbs, docsAbs)),
+      VERSIONS_DIR_FROM_APP: toPosix(path.relative(webAbs, path.resolve(root, userCfg.versionsDir || DEFAULT_CONFIG.versionsDir))),
+    };
+    copyTree(WEB_TEMPLATE_DIR, webAbs, webVars, log);
+  }
+  const out = [`대상: ${shown(root) || '.'}`, `만든 파일 ${log.created.length}개`];
+  for (const f of log.created) out.push(`  + ${f}`);
+  if (log.skipped.length) {
+    out.push(`이미 있어 건너뛴 파일 ${log.skipped.length}개 (덮어쓰지 않음)`);
+    for (const f of log.skipped) out.push(`  = ${f}`);
+  }
+  out.push('');
+  out.push('다음 단계 (PROCESS.md 0단계):');
+  out.push(`  1. 사이트 연결: ${opt.web ? 'web/README.md의 "합칠 것"을 확인' : 'srs init <저장소> --web <앱 폴더> --force 또는 web/README.md'}`);
+  out.push('  2. overview의 "합의 방식"을 고객사와 정한다');
+  out.push('  3. 출처 전수 확인(baseline/sources) → srs new feature <slug> --title "..." --code ABC');
+  out.push(`  4. 검사: srs check --root ${shown(root) || '.'}`);
+  process.stdout.write(`${out.join('\n')}\n`);
+}
+
+function runNew(cfg, pos, opt) {
+  const kind = pos[0];
+  const slug = pos[1];
+  const KINDS = { feature: 'features', policy: 'policies' };
+  if (!KINDS[kind]) die('종류는 feature 또는 policy다. 예: srs new feature order-cancellation --title "주문 취소" --code CAN');
+  if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) die('slug는 영문 소문자·숫자·하이픈이다');
+  if (!opt.title) die('--title이 필요하다');
+  const code = opt.code;
+  if (!code || !/^[A-Z][A-Z0-9]{1,4}$/.test(code)) die('--code는 영문 대문자 2~5자다(규칙 ID 접두어)');
+  const dirName = Object.entries(cfg.formDirs).find(([, k]) => k === kind)?.[0] || KINDS[kind];
+  const dir = path.join(cfg.docsAbs, dirName);
+  const { pages } = exists(cfg.docsAbs) ? loadPages(cfg) : { pages: [] };
+  const used = pages.find((p) => p.fm.code === code);
+  if (used) die(`code ${code}는 ${toPosix(path.relative(cfg.root, used.file))}에서 쓰고 있다`);
+  const date = opt.date || today();
+  const files = [
+    [path.join(TEMPLATE_DIR, 'pages', `${kind}.mdx`), path.join(dir, `${slug}.mdx`), opt.title, opt.description || ''],
+    ...cfg.translations.map((t) => [path.join(TEMPLATE_DIR, 'pages', `${kind}.en.mdx`), path.join(dir, `${slug}.${t}.mdx`), opt['en-title'] || opt.title, opt['en-description'] || '']),
+  ];
+  for (const [, dest] of files) if (exists(dest)) die(`이미 있다: ${shown(dest)}`);
+  fs.mkdirSync(dir, { recursive: true });
+  const out = [];
+  for (const [src, dest, title, description] of files) {
+    fs.writeFileSync(dest, fillPlaceholders(read(src), { TITLE: title.replace(/"/g, '\\"'), DESCRIPTION: description.replace(/"/g, '\\"'), DATE: date, CODE: code }));
+    out.push(`  + ${toPosix(path.relative(cfg.root, dest))}`);
+  }
+  if (addToMeta(dir, slug)) out.push(`  meta.json에 "${slug}" 추가`);
+  else out.push(`  ${dirName}/meta.json에 pages가 없어 순서에 넣지 않았다`);
+  if (!opt['en-title'] && cfg.translations.length) out.push('  번역 파일 title이 원문과 같다. 번역할 때 고친다(--en-title로 처음부터 줄 수 있다)');
+  out.push(`  규칙 ID는 ${code}-01부터. 다음: 추적표(baseline/traceability)에 규칙 ID를 넣는다`);
+  process.stdout.write(`${out.join('\n')}\n`);
+}
+
+// ---------------------------------------------------------------- main
+
+const HELP = `srs — SRS 키트 도구 (기준: STANDARD.md, 순서: PROCESS.md)
+
+사용법
+  srs init <저장소> [--name 이름] [--date YYYY-MM-DD] [--example] [--web <앱 폴더>] [--force]
+      docs/srs 뼈대와 srs.config.json을 만든다. 있는 파일은 덮어쓰지 않는다.
+      --example  예시 기능 페이지(주문 취소와 환불)를 함께 넣는다
+      --web      문서 사이트 코드(Next.js + fumadocs)를 앱 폴더에 복사한다
+  srs new <feature|policy> <slug> --title 제목 --code ABC [--description 설명] [--en-title Title]
+      기능·정책 페이지를 한국어·영어로 만들고 meta.json에 넣는다.
+  srs bump <페이지> [--note "바뀐 것"] [--date YYYY-MM-DD] [--lang ko|en|all] [--from YYYY-MM-DD]
+      고치기 전에 실행한다. 지금 파일을 docs/srs-versions/<지금 version>/에 남기고 version을 올린다.
+      --lang en  번역을 마친 뒤 영어 version을 원문 버전에 맞춘다
+      --lang all 두 언어를 함께 올린다
+  srs check [--json] [--strict] [--verbose] [--limit N]
+      모든 페이지를 검사한다. 오류가 있으면 종료 코드 1(--strict면 경고도 1).
+  srs status [--all]
+      기능·정책 페이지의 버전, 번역, 상태, 확인 현황을 표로 출력한다(확인 기록 페이지에 붙여 넣는다).
+
+공통 옵션
+  --root <폴더>     저장소 루트(기본: srs.config.json이 있는 가장 가까운 상위 폴더, 없으면 현재 폴더)
+  --config <파일>   설정 파일(기본: <root>/srs.config.json)
+`;
+
+function main() {
+  const [cmd, ...rest] = process.argv.slice(2);
+  const { pos, opt } = parseArgs(rest);
+  if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h' || opt.help) {
+    process.stdout.write(HELP);
+    return;
+  }
+  if (cmd === 'init') return runInit(pos, opt);
+  const cfg = loadConfig(opt);
+  if (cmd === 'check') {
+    const levels = printCheck(runCheck(cfg, opt), cfg, opt);
+    process.exitCode = levels.error > 0 || (opt.strict && levels.warn > 0) ? 1 : 0;
+    return;
+  }
+  if (cmd === 'status') return runStatus(cfg, opt);
+  if (cmd === 'bump') return runBump(cfg, pos, opt);
+  if (cmd === 'new') return runNew(cfg, pos, opt);
+  die(`알 수 없는 명령: ${cmd} (srs help)`);
+}
+
+main();

@@ -1,0 +1,20 @@
+{
+  "$comment": "srs-kit 설정. 기본값과 다른 것만 남겨도 된다. 항목 설명: srs-kit README.md",
+  "docsDir": "docs/srs",
+  "versionsDir": "docs/srs-versions",
+  "primaryLanguage": "ko",
+  "translations": ["en"],
+  "requireTranslations": true,
+  "legacyVersion": null,
+  "pages": {
+    "sources": "baseline/sources",
+    "traceability": "baseline/traceability",
+    "glossary": "glossary"
+  },
+  "internalPages": ["baseline/"],
+  "formDirs": { "features": "feature", "policies": "policy" },
+  "docBasePaths": ["/docs/srs"],
+  "terms": { "ko": [], "en": [] },
+  "allowTerms": [],
+  "assets": { "urlPrefix": "/srs-assets/", "dir": null }
+}

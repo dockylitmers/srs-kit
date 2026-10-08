@@ -1,0 +1,42 @@
+---
+title: "Sources"
+description: "Every source checked while writing the SRS and where it is reflected"
+version: "{{DATE}}"
+versionNote: "Example sources added"
+---
+
+{/* Contains srs-kit example rows. Delete them in a real project. */}
+
+## Coverage
+
+| Source group | Location | Documents in group | Rows in this list | Checked on |
+| --- | --- | ---: | ---: | --- |
+| Contract documents | Contract folder | 2 | 2 | 2026-09-28 |
+| Client request board | Request board in the client communication tool | 5 | 5 | 2026-10-02 |
+| Client tool pages linked only from the issue tracker | Links collected from issue bodies and comments | 1 | 1 | 2026-10-02 |
+| Team decisions | Decision comments in the issue tracker | 1 | 1 | 2026-10-02 |
+
+## Sources
+
+| ID | Source | Rank | Document date | Checked on | Reflected in |
+| --- | --- | ---: | --- | --- | --- |
+| SRC-001 | Scope appendix to the service contract | 1 | 2026-09-01 | 2026-09-28 | [Overview](../overview) |
+| SRC-002 | Request board "Order cancellation rules" and the client's answer | 3 | 2026-09-20 | 2026-10-02 | [Order cancellation and refunds](../features/order-cancellation) |
+| SRC-003 | Request board "Coupon policy" | 3 | 2026-09-18 | 2026-10-02 | [Order cancellation and refunds](../features/order-cancellation) |
+| SRC-004 | Payment provider's cancellation guide | 5 | 2026-08-30 | 2026-10-02 | [Order cancellation and refunds](../features/order-cancellation) |
+| SRC-005 | Request board "Points policy" | 3 | 2026-09-18 | 2026-10-02 | [Order cancellation and refunds](../features/order-cancellation) |
+| SRC-006 | Request board "Admin roles and permissions" | 3 | 2026-09-22 | 2026-10-02 | [Order cancellation and refunds](../features/order-cancellation) |
+| SRC-007 | Issue decision comment "Cancellation notification channels" | 5 | 2026-09-25 | 2026-10-02 | [Order cancellation and refunds](../features/order-cancellation) |
+| SRC-008 | Initial planning document v1 | 7 | 2026-07-10 | 2026-09-28 | Not reflected: the cancellation deadline was superseded by SRC-002 |
+| SRC-009 | Request board "Cancellation rules review" comment (client confirmation) | 2 | 2026-10-02 | 2026-10-02 | [Order cancellation and refunds](../features/order-cancellation) |
+
+## Superseded content
+
+| Not followed (source) | Followed (source) | Reason |
+| --- | --- | --- |
+| Cancel within 72 hours of the payment time (SRC-008) | Cancel until day 7 counted from the payment date (SRC-002, SRC-009) | The later client answer and confirmation record take precedence |
+
+## Sources not checked
+
+| Source | Reason | Next step |
+| --- | --- | --- |
