@@ -79,6 +79,7 @@ cd ~/work/my-project
 | `formDirs` | `{ "features": "feature", "policies": "policy" }` | 기능·정책 양식으로 검사할 폴더 |
 | `ruleIdPattern` / `sourceIdPattern` | `[A-Z][A-Z0-9]*(?:[-.][A-Z0-9]+)*-\d{2,4}` / `SRC-\d{3,4}` | 규칙 ID와 출처 ID 형식(정규식) |
 | `codePattern` | `^[A-Z][A-Z0-9]{1,4}$` | 페이지 frontmatter `code` 형식(정규식). 기존 문서의 ID 체계를 그대로 쓸 때 바꾼다(예: `^(?:[A-Z][A-Z0-9]{1,4}|FR-3\.\d{1,2})$`) |
+| `guidePages` | `[]` | 규칙 없이 다른 페이지를 안내만 하는 페이지. 기능·정책 양식 검사에서 뺀다(경로 또는 "폴더/" 접두어) |
 | `docBasePaths` | `["/docs/srs"]` | 문서 사이트 주소(이 주소로 시작하는 절대 링크를 알린다) |
 | `terms` / `allowTerms` | `{ko: [], en: []}` / `[]` | 프로젝트에서 더 금지할 말, 허용할 말 |
 | `assets` | `urlPrefix: /srs-assets/`, `dir: null` | `dir`을 주면 그 주소로 시작하는 이미지 파일이 있는지 본다 |

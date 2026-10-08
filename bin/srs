@@ -34,6 +34,8 @@ const DEFAULT_CONFIG = {
   reservedTopLevelNames: ['en', 'v'],
   // 팀이 관리하는 페이지(고객사가 읽는 부분 규칙을 적용하지 않음). 경로 또는 "폴더/" 접두어
   internalPages: ['baseline/'],
+  // 규칙 없이 다른 페이지를 안내만 하는 페이지(양식 검사 제외). 경로 또는 "폴더/" 접두어
+  guidePages: [],
   terms: { ko: [], en: [] },
   allowTerms: [],
   assets: { urlPrefix: '/srs-assets/', dir: null },
@@ -412,6 +414,7 @@ function formKind(page, cfg) {
   const dir = page.slug.split('/').slice(0, -1).join('/');
   if (!(dir in cfg.formDirs)) return null;
   if (path.basename(page.slug) === 'index') return null;
+  if ((cfg.guidePages || []).some((g) => (g.endsWith('/') ? page.slug.startsWith(g) : page.slug === g))) return null;
   return cfg.formDirs[dir];
 }
 
