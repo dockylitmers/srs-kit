@@ -26,6 +26,8 @@ const DEFAULT_CONFIG = {
   // 기능 페이지 양식(STANDARD 6절)을 검사할 폴더와 종류
   formDirs: { features: 'feature', policies: 'policy' },
   ruleIdPattern: '[A-Z][A-Z0-9]*(?:[-.][A-Z0-9]+)*-\\d{2,4}',
+  // 페이지 frontmatter code(규칙 ID 접두어) 형식. 기존 문서의 ID 체계(예: FR-3.22)를 쓰려면 프로젝트 설정에서 바꾼다.
+  codePattern: '^[A-Z][A-Z0-9]{1,4}$',
   sourceIdPattern: 'SRC-\\d{3,4}',
   // 문서 사이트 주소. 본문에서 이 주소로 시작하는 절대 링크를 찾는다.
   docBasePaths: ['/docs/srs'],
@@ -700,7 +702,7 @@ function runCheck(cfg, opt) {
     const fileRel = relRoot(p.file);
     const rules = extractRules(p, cfg);
     const kind = formKind(p, cfg);
-    if (p.fm.code && !/^[A-Z][A-Z0-9]{1,4}$/.test(p.fm.code)) add('error', fileRel, 1, 'code-format', `code는 영문 대문자 2~5자다: ${p.fm.code}`);
+    if (p.fm.code && !new RegExp(cfg.codePattern).test(p.fm.code)) add('error', fileRel, 1, 'code-format', `code 형식(${cfg.codePattern})과 다릅니다: ${p.fm.code}`);
     for (const r of rules) {
       allRules.push({ ...r, page: p });
       if (ruleOwner.has(r.id)) add('error', fileRel, r.n, 'rule-duplicate', `규칙 ID ${r.id}가 ${relRoot(ruleOwner.get(r.id).file)}에도 있습니다`);

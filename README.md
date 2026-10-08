@@ -78,6 +78,7 @@ cd ~/work/my-project
 | `internalPages` | `["baseline/"]` | 팀이 관리하는 페이지(경로 또는 `폴더/`). 고객사가 읽는 부분 검사를 하지 않고, 규칙 ID를 정의하지 않는다 |
 | `formDirs` | `{ "features": "feature", "policies": "policy" }` | 기능·정책 양식으로 검사할 폴더 |
 | `ruleIdPattern` / `sourceIdPattern` | `[A-Z][A-Z0-9]*(?:[-.][A-Z0-9]+)*-\d{2,4}` / `SRC-\d{3,4}` | 규칙 ID와 출처 ID 형식(정규식) |
+| `codePattern` | `^[A-Z][A-Z0-9]{1,4}$` | 페이지 frontmatter `code` 형식(정규식). 기존 문서의 ID 체계를 그대로 쓸 때 바꾼다(예: `^(?:[A-Z][A-Z0-9]{1,4}|FR-3\.\d{1,2})$`) |
 | `docBasePaths` | `["/docs/srs"]` | 문서 사이트 주소(이 주소로 시작하는 절대 링크를 알린다) |
 | `terms` / `allowTerms` | `{ko: [], en: []}` / `[]` | 프로젝트에서 더 금지할 말, 허용할 말 |
 | `assets` | `urlPrefix: /srs-assets/`, `dir: null` | `dir`을 주면 그 주소로 시작하는 이미지 파일이 있는지 본다 |
