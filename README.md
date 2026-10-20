@@ -25,16 +25,27 @@ SRS는 **고객사와 합의한 범위 기준선**이다. 고객사가 기능별
 
 ## 설치
 
-Node.js 18 이상과 git만 있으면 된다(외부 패키지 없음).
+Node.js 18 이상과 git이 있으면 된다(외부 패키지 없음).
+
+**Claude Code로 (권장)**
 
 ```bash
 git clone https://github.com/dockylitmers/srs-kit.git ~/srs-kit
-echo 'export SRS_KIT=~/srs-kit' >> ~/.zshrc            # 셸 설정에
-ln -s ~/srs-kit/skill ~/.claude/skills/srs              # Claude Code 스킬
-# 명령을 짧게 쓰려면: ln -s ~/srs-kit/bin/srs /usr/local/bin/srs
+cd ~/srs-kit && claude
 ```
 
-갱신은 `git -C ~/srs-kit pull`. 스킬이 링크라서 따로 다시 설치하지 않는다.
+처음 열면 Claude가 설치 상태를 확인하고(세션 시작 훅), 첫 메시지에 설치와 온보딩을 이어서 한다. 스킬과 `srs` 명령을 연결하고, SRS를 세팅할 프로젝트 폴더를 물은 뒤 근거 문서를 받는다. 폴더를 처음 열 때 Claude Code가 이 폴더를 믿을지 물으면 허용해야 훅이 동작한다.
+
+**터미널만으로**
+
+```bash
+git clone https://github.com/dockylitmers/srs-kit.git ~/srs-kit
+node ~/srs-kit/bin/srs install          # 스킬(~/.claude/skills/srs)과 srs 명령 연결
+srs onboard ~/work/my-project           # 프로젝트에 세팅하고 근거 문서 받기
+```
+
+- `srs install`은 스킬을 링크로 건다(키트의 기준 문서·도구·템플릿을 스킬이 함께 쓰기 때문). `srs` 명령은 PATH에 있는 `~/.local/bin`이나 `~/bin`에 링크하고, 둘 다 없으면 셸 설정에 넣을 alias를 알려 준다.
+- 상태 확인: `srs doctor`. 갱신: `git -C ~/srs-kit pull`(링크라 다시 설치하지 않는다).
 
 ## 온보딩
 
@@ -96,6 +107,8 @@ srs status
 
 | 명령 | 하는 일 |
 | --- | --- |
+| `srs install [--force]` | 스킬과 `srs` 명령을 연결한다 |
+| `srs doctor [--hook]` | 설치 상태. `--hook`은 세션 시작 훅용 안내 |
 | `srs onboard [<저장소>]` | 묻고 답하며 세팅하고 근거 문서를 받는다(위 "온보딩") |
 | `srs source add <링크\|파일\|폴더\|메모> [--kind contract\|client\|design\|decision\|code\|old] [--title] [--date] [--group] [--each] [--copy] [--edited] [--dry-run]` | 근거 문서 하나를 원문·번역 출처 목록에 "읽기 전"으로 넣는다. 종류(순위)는 위치와 파일 이름으로 추정한다. `--group` 하위 문서까지 근거인 묶음(확인 범위에 한 행), `--each` 폴더의 문서를 하나씩, `--copy` 파일 사본을 보관함에(git에 올라가지 않음), `--edited` 링크 문서의 수정일 |
 | `srs source list [--unread]` | 출처 목록. `--unread`는 읽기 전만 |

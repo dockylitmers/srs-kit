@@ -183,7 +183,7 @@ function escapeRe(s) {
 }
 
 function parseArgs(argv) {
-  const BOOL = new Set(['example', 'force', 'json', 'strict', 'help', 'verbose', 'all', 'edition', 'dry-run', 'copy', 'each', 'group', 'unread', 'quiet', 'changed']);
+  const BOOL = new Set(['example', 'force', 'json', 'strict', 'help', 'verbose', 'all', 'edition', 'dry-run', 'copy', 'each', 'group', 'unread', 'quiet', 'changed', 'hook']);
   const pos = [];
   const opt = {};
   for (let i = 0; i < argv.length; i++) {
@@ -2222,11 +2222,105 @@ async function runOnboard(pos, opt) {
   say('묶음의 하위 문서를 펼치고, 기능 목록과 첫 초안을 만든다. 남은 출처는 srs source list --unread.');
 }
 
+// ---------------------------------------------------------------- install, doctor
+
+const SKILL_LINK = () => path.join(process.env.HOME || '', '.claude', 'skills', 'srs');
+const SKILL_DIR = path.join(KIT_DIR, 'skill');
+
+// 이 키트의 설치 상태
+function installState() {
+  const link = SKILL_LINK();
+  let skill = 'missing';
+  let skillTarget = null;
+  try {
+    const st = fs.lstatSync(link);
+    if (st.isSymbolicLink()) {
+      skillTarget = path.resolve(path.dirname(link), fs.readlinkSync(link));
+      skill = exists(skillTarget) && fs.realpathSync(skillTarget) === fs.realpathSync(SKILL_DIR) ? 'ok' : 'other';
+    } else skill = 'copy';
+  } catch {
+    /* 없음 */
+  }
+  const pathDirs = (process.env.PATH || '').split(path.delimiter);
+  const onPath = pathDirs.find((d) => {
+    const f = path.join(d, 'srs');
+    try {
+      return fs.realpathSync(f) === fs.realpathSync(path.join(KIT_DIR, 'bin', 'srs'));
+    } catch {
+      return false;
+    }
+  });
+  const nodeMajor = Number(process.versions.node.split('.')[0]);
+  return { link, skill, skillTarget, onPath: onPath || null, nodeOk: nodeMajor >= 18, node: process.versions.node };
+}
+
+function runInstall(opt) {
+  const st = installState();
+  const out = [];
+  const link = st.link;
+  if (st.skill === 'ok') out.push(`스킬: 이미 연결됨 (${shown(link)} → ${shown(SKILL_DIR)})`);
+  else {
+    if (st.skill !== 'missing' && !opt.force) die(`${link}가 이미 있다(${st.skill === 'copy' ? '링크가 아닌 폴더' : `다른 곳을 가리킴: ${st.skillTarget}`}). 바꾸려면 srs install --force`);
+    if (st.skill !== 'missing') fs.rmSync(link, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(SKILL_DIR, link);
+    out.push(`스킬: 연결함 (${shown(link)} → ${shown(SKILL_DIR)})`);
+  }
+  // 명령: PATH에 있는 사용자 bin 폴더(~/.local/bin, ~/bin)에 링크를 건다
+  if (st.onPath) out.push(`명령: 이미 PATH에 있음 (${path.join(st.onPath, 'srs')})`);
+  else {
+    const home = process.env.HOME || '';
+    const pathDirs = (process.env.PATH || '').split(path.delimiter);
+    const dir = [path.join(home, '.local', 'bin'), path.join(home, 'bin')].find((d) => pathDirs.includes(d) && exists(d));
+    const target = dir && path.join(dir, 'srs');
+    if (target && !exists(target)) {
+      fs.symlinkSync(path.join(KIT_DIR, 'bin', 'srs'), target);
+      out.push(`명령: 연결함 (${target})`);
+    } else {
+      out.push('명령: PATH에 넣을 사용자 bin 폴더가 없어 건너뜀. 터미널에서 srs를 쓰려면 셸 설정(~/.zshrc 등)에:');
+      out.push(`  alias srs="${path.join(KIT_DIR, 'bin', 'srs')}"`);
+    }
+  }
+  if (!st.nodeOk) out.push(`주의: Node.js ${st.node}. 18 이상이 필요하다`);
+  out.push('');
+  out.push('다음: SRS를 세팅할 프로젝트 폴더에서 Claude Code를 열고 "SRS 온보딩", 또는 터미널에서 srs onboard <프로젝트 폴더>');
+  out.push(`갱신: git -C "${KIT_DIR}" pull (스킬은 링크라 다시 설치하지 않는다)`);
+  process.stdout.write(`${out.join('\n')}\n`);
+}
+
+function runDoctor(opt) {
+  const st = installState();
+  const lines = [
+    `srs-kit: ${KIT_DIR}`,
+    `Node.js: ${st.node}${st.nodeOk ? '' : ' (18 이상 필요)'}`,
+    `스킬: ${{ ok: '연결됨', missing: '없음', other: `다른 곳을 가리킴(${st.skillTarget})`, copy: '링크가 아닌 폴더' }[st.skill]} (${shown(st.link)})`,
+    `명령 srs: ${st.onPath ? path.join(st.onPath, 'srs') : 'PATH에 없음'}`,
+  ];
+  if (!opt.hook) {
+    process.stdout.write(`${lines.join('\n')}\n${st.skill === 'ok' ? '' : '설치: node bin/srs install\n'}`);
+    return;
+  }
+  // 세션 시작 훅: Claude에게 줄 안내(표준 출력이 세션 맥락에 들어간다)
+  const ctx = ['[srs-kit] 이 폴더는 srs-kit 저장소다.', ...lines.map((l) => `- ${l}`)];
+  if (st.skill === 'ok') ctx.push('설치는 끝나 있다. 사용자가 SRS 세팅을 원하면 "SRS 온보딩" 절차(skill/SKILL.md)를 대상 프로젝트 폴더에서 진행한다. 키트 자체를 고치는 작업이면 이 안내는 무시한다.');
+  else {
+    ctx.push('설치가 안 돼 있다. 사용자의 첫 메시지가 무엇이든 먼저 아래 온보딩을 시작한다(키트 자체를 고치러 온 것이 분명하면 묻고 건너뛴다).');
+    ctx.push('1. 한 줄로 인사하고 `node bin/srs install`을 실행해 스킬과 명령을 연결한다. 결과를 짧게 알린다. 이미 다른 srs 스킬이 있다는 오류면 바꿀지 묻고 동의하면 --force.');
+    ctx.push('2. "SRS를 세팅할 프로젝트 폴더 경로를 알려 주세요(없으면 새로 만들 폴더)."를 묻는다.');
+    ctx.push('3. 받은 폴더에서 skill/SKILL.md의 "온보딩" 절차를 그대로 따른다: 기본 정보 → 근거 문서 링크·파일을 하나씩 받기 → 읽기 → 보고. 명령은 node bin/srs … --root <그 폴더> 로 실행한다.');
+  }
+  process.stdout.write(`${ctx.join('\n')}\n`);
+}
+
 // ---------------------------------------------------------------- main
 
 const HELP = `srs — SRS 키트 도구 (기준: STANDARD.md, 순서: PROCESS.md)
 
 사용법
+  srs install [--force]
+      이 키트를 설치한다: Claude Code 스킬 연결(~/.claude/skills/srs), srs 명령을 PATH의 사용자 bin 폴더에 연결.
+  srs doctor [--hook]
+      설치 상태를 보여 준다. --hook은 Claude Code 세션 시작 훅용 안내를 출력한다.
   srs onboard [<저장소>]
       처음 세팅을 묻고 답하며 한다: 기본 정보 → 근거 문서(Notion·Google 링크, PDF·Word·한글 파일, 폴더, 메모)를
       하나씩 붙여 넣으면 출처 목록에 "읽기 전"으로 넣는다. 이어서 Claude Code에서 "SRS 온보딩 이어서".
@@ -2275,6 +2369,8 @@ function main() {
     process.stdout.write(HELP);
     return;
   }
+  if (cmd === 'install') return runInstall(opt);
+  if (cmd === 'doctor') return runDoctor(opt);
   if (cmd === 'init') return runInit(pos, opt);
   if (cmd === 'onboard') return runOnboard(pos, opt);
   const cfg = loadConfig(opt);
