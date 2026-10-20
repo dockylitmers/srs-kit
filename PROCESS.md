@@ -130,6 +130,7 @@
 - 영어 번역은 한국어 수정이 끝난 뒤 따라간다. `bin/srs check`의 "번역 뒤처짐" 경고가 0이 될 때까지. 판으로 낼 때는 두 언어를 함께 올린다.
 - 스프린트마다: `bin/srs check`, `bin/srs status`, 구현 대조(3단계) 갱신, `bin/srs sync trace`.
 - 페이지 제목을 바꿨으면 `bin/srs sync links`로 링크 글자를 맞춘다. 링크 글자와 페이지 번호만 고치는 것은 bump하지 않는다.
+- 근거 문서가 바뀌면: `bin/srs check`가 파일·폴더 출처의 변경을 `source-changed`로 알린다. 링크 문서는 판을 시작할 때와 확인 요청 전에 수정일을 비교한다(`bin/srs source status`). 다시 읽고 고칠 것을 다음 판 목록에 넣은 뒤 `bin/srs source refresh <ID>`. 사본을 두는 출처는 날짜별 사본이 남아 무엇이 바뀌었는지 비교할 수 있다.
 
 ## 판 운영
 

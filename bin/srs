@@ -183,7 +183,7 @@ function escapeRe(s) {
 }
 
 function parseArgs(argv) {
-  const BOOL = new Set(['example', 'force', 'json', 'strict', 'help', 'verbose', 'all', 'edition', 'dry-run', 'copy', 'each', 'group', 'unread', 'quiet']);
+  const BOOL = new Set(['example', 'force', 'json', 'strict', 'help', 'verbose', 'all', 'edition', 'dry-run', 'copy', 'each', 'group', 'unread', 'quiet', 'changed']);
   const pos = [];
   const opt = {};
   for (let i = 0; i < argv.length; i++) {
@@ -892,6 +892,22 @@ function runCheck(cfg, opt) {
       for (const id of r.sources.match(cfg.sourceIdGlobal) || []) {
         if (!sourceIds.has(id)) add('error', relRoot(r.page.file), r.n, 'rule-unknown-source', `${r.id}: 출처 ${id}가 출처 목록에 없습니다`);
       }
+    }
+  }
+
+  // 7-1. 근거 파일 보관함: 사본이 git에 올라가지 않았는지, 넣은 뒤 원본이 바뀌지 않았는지
+  const vault = vaultDir(cfg);
+  if (exists(vault)) {
+    const vrel = toPosix(path.relative(cfg.root, vault));
+    const tracked = git(cfg, ['-c', 'core.quotePath=false', 'ls-files', '--', vrel], { allowFail: true });
+    for (const f of (tracked || '').split('\n').map((x) => x.trim()).filter(Boolean)) {
+      if (/(^|\/)(\.gitignore|manifest\.json)$/.test(f)) continue;
+      add('error', f, 0, 'source-copy-tracked', `근거 파일 사본이 git에 올라가 있습니다. git rm --cached "${f}" 후 커밋한다(보관함의 .gitignore가 막지만 강제로 추가된 것)`);
+    }
+    if (!exists(path.join(vault, '.gitignore'))) add('error', vrel + '/', 0, 'source-vault-unignored', '보관함에 .gitignore가 없습니다. srs source add나 srs source refresh를 한 번 실행하면 다시 만든다');
+    for (const st of sourceStatuses(cfg)) {
+      if (st.state === 'changed') add('warn', `${vrel}/manifest.json`, 0, 'source-changed', `${st.id}: ${st.detail}. 다시 읽고 SRS에 반영한 뒤 srs source refresh ${st.id}`);
+      else if (st.state === 'missing') add('info', `${vrel}/manifest.json`, 0, 'source-missing-here', `${st.id}: ${st.detail}`);
     }
   }
 
@@ -1759,12 +1775,14 @@ function insertRow(raw, table, cells) {
   raw.splice(at, 0, `| ${cells.map(cellOut).join(' | ')} |`);
 }
 
-// 출처 한 개(또는 묶음 행)를 원문·번역 출처 목록에 넣는다. 쓴 ID를 돌려준다
+// 출처 한 개를 원문·번역 출처 목록에 넣고 보관함 기록(manifest)에 지문을 남긴다. 쓴 ID를 돌려준다
+// meta: { title, kind, date, group, copy, edited, files }
 function registerSource(cfg, get, src, meta, opt) {
   const primaryPage = get(cfg.pages.sources);
   if (!primaryPage) die(`출처 목록 페이지(${cfg.pages.sources})가 없습니다. 먼저 srs init`);
   const id = opt.id || nextSourceId(primaryPage);
-  const date = opt.checked || today();
+  const date = today();
+  const where = src.file ? displayPath(cfg, src.file) : null;
   for (const lang of cfg.langs) {
     const page = get(cfg.pages.sources, lang);
     if (!page) continue;
@@ -1775,13 +1793,12 @@ function registerSource(cfg, get, src, meta, opt) {
     const title = meta.title || (en ? 'Untitled' : '제목 없음');
     let cell;
     if (src.url) cell = `[${title.replace(/[[\]]/g, '')}](${src.url}) · ${typeLabel}`;
-    else if (src.file) cell = `${title} · ${typeLabel} · \`${meta.where}\``;
+    else if (src.file) cell = `${title} · ${typeLabel} · \`${where}\``;
     else cell = `${title} · ${typeLabel}`;
     if (meta.group) cell += en ? ' · group' : ' · 묶음';
     const cells = list.header.map(() => '');
-    const col = (re) => columnIndex(list, re);
     const set = (re, v) => {
-      const i = col(re);
+      const i = columnIndex(list, re);
       if (i >= 0) cells[i] = v;
     };
     cells[0] = id;
@@ -1796,7 +1813,8 @@ function registerSource(cfg, get, src, meta, opt) {
     if (meta.group && cover) {
       const c = cover.header.map(() => '');
       c[0] = title;
-      if (c.length > 1) c[1] = src.url ? `[${en ? 'link' : '링크'}](${src.url})` : `\`${meta.where || ''}\``;
+      if (c.length > 1) c[1] = src.url ? `[${en ? 'link' : '링크'}](${src.url})` : `\`${where || ''}\``;
+      if (meta.files && c.length > 3) c[2] = c[3] = String(meta.files.length);
       if (c.length > 4) c[4] = date;
       jobs.push([cover, c]);
     }
@@ -1804,27 +1822,148 @@ function registerSource(cfg, get, src, meta, opt) {
     for (const [t, c] of jobs) insertRow(raw, t, c);
     if (!opt['dry-run']) fs.writeFileSync(page.file, raw.join(page.text.includes('\r\n') ? '\r\n' : '\n'));
   }
+  if (!opt['dry-run']) {
+    const m = loadManifest(cfg);
+    const entry = { type: src.kind === 'dir' ? 'dir' : src.kind, checked: date };
+    if (src.url) {
+      entry.url = src.url;
+      if (meta.edited) entry.edited = meta.edited;
+    }
+    if (src.kind === 'file') {
+      Object.assign(entry, { path: where }, fingerprint(src.file));
+      if (meta.copy) entry.copies = [snapshotSource(cfg, id, src.file)];
+    }
+    if (src.kind === 'dir') Object.assign(entry, { path: where, files: meta.files || folderFiles(src.file).map((f) => toPosix(path.relative(src.file, f))) });
+    m.sources[id] = entry;
+    saveManifest(cfg, m);
+  }
   return id;
 }
 
-// 로컬 파일 위치를 저장소 기준으로 적는다. --copy면 sourcesDir로 복사한다
-function placeFile(cfg, file, copy) {
-  if (copy) {
-    const dir = path.resolve(cfg.root, cfg.sourcesDir || 'srs-sources');
-    fs.mkdirSync(dir, { recursive: true });
-    let dest = path.join(dir, path.basename(file));
-    if (exists(dest) && read(dest) !== read(file)) dest = path.join(dir, `${Date.now()}-${path.basename(file)}`);
-    if (!exists(dest)) fs.copyFileSync(file, dest);
-    return toPosix(path.relative(cfg.root, dest));
+// ---- 근거 파일 보관함(sourcesDir): 사본과 지문 기록. 사본은 git에 올라가지 않는다
+
+const crypto = require('node:crypto');
+
+function vaultDir(cfg) {
+  return path.resolve(cfg.root, cfg.sourcesDir || 'srs-sources');
+}
+
+function ensureVault(cfg) {
+  const dir = vaultDir(cfg);
+  fs.mkdirSync(dir, { recursive: true });
+  const gi = path.join(dir, '.gitignore');
+  const want = '# srs-kit 근거 파일 보관함. 사본은 계약서 같은 비공개 문서일 수 있어 git에 올리지 않는다.\n# 지문 기록(manifest.json)만 올려 팀이 원본이 바뀌었는지 함께 본다.\n*\n!.gitignore\n!manifest.json\n';
+  if (!exists(gi) || read(gi) !== want) fs.writeFileSync(gi, want);
+  return dir;
+}
+
+function loadManifest(cfg) {
+  const f = path.join(vaultDir(cfg), 'manifest.json');
+  if (!exists(f)) return { version: 1, sources: {} };
+  try {
+    const m = JSON.parse(read(f));
+    m.sources = m.sources || {};
+    return m;
+  } catch (e) {
+    die(`${shown(f)}: JSON을 읽을 수 없습니다 (${e.message})`);
   }
+}
+
+function saveManifest(cfg, m) {
+  const dir = ensureVault(cfg);
+  const sorted = {};
+  for (const k of Object.keys(m.sources).sort()) sorted[k] = m.sources[k];
+  fs.writeFileSync(path.join(dir, 'manifest.json'), `${JSON.stringify({ version: 1, sources: sorted }, null, 2)}\n`);
+}
+
+function fingerprint(file) {
+  const buf = fs.readFileSync(file);
+  return { sha256: crypto.createHash('sha256').update(buf).digest('hex'), size: buf.length };
+}
+
+// 사본은 <보관함>/<ID>/<날짜>-<파일 이름>. 같은 내용이 이미 있으면 새로 만들지 않는다
+function snapshotSource(cfg, id, file) {
+  const dir = path.join(ensureVault(cfg), id);
+  fs.mkdirSync(dir, { recursive: true });
+  const fp = fingerprint(file).sha256;
+  for (const f of fs.readdirSync(dir)) {
+    const p = path.join(dir, f);
+    if (fs.statSync(p).isFile() && fingerprint(p).sha256 === fp) return toPosix(path.relative(cfg.root, p));
+  }
+  let dest = path.join(dir, `${today()}-${path.basename(file)}`);
+  for (let i = 2; exists(dest); i++) dest = path.join(dir, `${today()}-${i}-${path.basename(file)}`);
+  fs.copyFileSync(file, dest);
+  return toPosix(path.relative(cfg.root, dest));
+}
+
+// 출처 목록에 적는 원본 위치: 저장소 안이면 저장소 기준, 집 폴더 아래면 ~/…
+function displayPath(cfg, file) {
   const rel = path.relative(cfg.root, file);
-  if (!rel.startsWith('..')) return toPosix(rel);
+  if (!rel.startsWith('..') && !path.isAbsolute(rel)) return toPosix(rel);
   const home = process.env.HOME;
-  return home && file.startsWith(home) ? `~/${toPosix(path.relative(home, file))}` : toPosix(file);
+  return home && file.startsWith(`${home}/`) ? `~/${toPosix(path.relative(home, file))}` : toPosix(file);
+}
+
+function resolveWhere(cfg, where) {
+  return path.resolve(cfg.root, expandHome(where));
+}
+
+// 저장소 안의 원본 파일이 git에 올라갈 수 있는지(무시되지 않으면 경고 문장)
+function repoExposure(cfg, file) {
+  const rel = path.relative(cfg.root, file);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  if (git(cfg, ['rev-parse', '--is-inside-work-tree'], { allowFail: true }) === null) return null;
+  if (git(cfg, ['check-ignore', '-q', '--', rel], { allowFail: true }) !== null) return null;
+  const tracked = git(cfg, ['ls-files', '--error-unmatch', '--', rel], { allowFail: true }) !== null;
+  return `${toPosix(rel)}는 저장소 안에 있고 git이 무시하지 않는다${tracked ? '(이미 커밋됨)' : ''}. 공유하면 안 되는 문서면 저장소 밖으로 옮기거나 .gitignore에 넣는다`;
 }
 
 function folderFiles(dir) {
   return walk(dir).filter((f) => FILE_TYPES.some(([re]) => re.test(f))).slice(0, 500);
+}
+
+// 기록한 지문과 지금 원본을 비교한다
+function sourceStatuses(cfg) {
+  const m = loadManifest(cfg);
+  const out = [];
+  for (const [id, e] of Object.entries(m.sources)) {
+    const s = { id, entry: e, state: 'same', detail: '' };
+    if (e.type === 'file') {
+      const f = resolveWhere(cfg, e.path);
+      if (!exists(f)) Object.assign(s, { state: 'missing', detail: `이 기기에 원본이 없다: ${e.path}` });
+      else if (fingerprint(f).sha256 !== e.sha256) Object.assign(s, { state: 'changed', detail: `${e.checked} 확인 뒤 원본이 바뀌었다: ${e.path}` });
+    } else if (e.type === 'dir') {
+      const d = resolveWhere(cfg, e.path);
+      if (!exists(d)) Object.assign(s, { state: 'missing', detail: `이 기기에 폴더가 없다: ${e.path}` });
+      else {
+        const now = folderFiles(d).map((f) => toPosix(path.relative(d, f)));
+        const added = now.filter((f) => !(e.files || []).includes(f));
+        const removed = (e.files || []).filter((f) => !now.includes(f));
+        if (added.length || removed.length) Object.assign(s, { state: 'changed', detail: `폴더 문서가 바뀌었다: 새 문서 ${added.length}개${added.length ? `(${added.slice(0, 3).join(', ')}${added.length > 3 ? ' …' : ''})` : ''}, 없어진 문서 ${removed.length}개`, added, removed });
+      }
+    } else if (e.type === 'url') Object.assign(s, { state: 'url', detail: `${e.checked} 확인${e.edited ? `, 그때 문서 수정일 ${e.edited}` : ''}. 링크 문서는 열어서 수정일을 비교한다` });
+    else s.state = 'note';
+    out.push(s);
+  }
+  return out;
+}
+
+// 출처 목록의 확인일 칸을 고친다(원문·번역)
+function setCheckedDate(cfg, id, date, opt) {
+  const { get } = loadPages(cfg);
+  for (const lang of cfg.langs) {
+    const page = get(cfg.pages.sources, lang);
+    if (!page) continue;
+    const { list } = sourcesTables(page);
+    const col = list ? columnIndex(list, /^(확인일|Checked on)$/i) : -1;
+    const row = list && list.rows.find((r) => (r.cells[0] || '').trim() === id);
+    if (!row || col < 0) continue;
+    const raw = [...page.raw];
+    const cells = splitCells(raw[row.n - 1]);
+    cells[col] = date;
+    raw[row.n - 1] = `| ${cells.map(cellOut).join(' | ')} |`;
+    if (!opt['dry-run']) fs.writeFileSync(page.file, raw.join('\n'));
+  }
 }
 
 function runSourceAdd(cfg, pos, opt) {
@@ -1835,29 +1974,37 @@ function runSourceAdd(cfg, pos, opt) {
   if (src.kind === 'missing') die(`파일이 없습니다: ${src.file}`);
   const kind = kindOf(opt.kind ?? opt.rank) || kindOf(src.guess);
   if ((opt.kind || opt.rank) && !kindOf(opt.kind ?? opt.rank)) die(`--kind는 ${SOURCE_KINDS.map((k) => k.key).join(', ')} 중 하나, 또는 --rank 1·3~7`);
-  if (opt.date && !isDate(opt.date)) die(`--date 형식이 YYYY-MM-DD가 아닙니다: ${opt.date}`);
+  for (const k of ['date', 'edited']) if (opt[k] && !isDate(opt[k])) die(`--${k} 형식이 YYYY-MM-DD가 아닙니다: ${opt[k]}`);
   const out = [];
+  const warnExposure = (f) => {
+    const w = repoExposure(cfg, f);
+    if (w) out.push(`  주의: ${w}`);
+  };
   if (src.kind === 'dir' && opt.each) {
     const files = folderFiles(src.file);
     for (const f of files) {
       const fsrc = detectSource(f, process.cwd());
-      const id = registerSource(cfg, loadPages(cfg).get, fsrc, { title: fsrc.title, kind: kindOf(opt.kind ?? opt.rank) || kindOf(fsrc.guess), date: opt.date, where: placeFile(cfg, f, opt.copy) }, opt);
+      const id = registerSource(cfg, loadPages(cfg).get, fsrc, { title: fsrc.title, kind: kindOf(opt.kind ?? opt.rank) || kindOf(fsrc.guess), date: opt.date, copy: opt.copy }, opt);
       out.push(`  ${id}  ${fsrc.ko}  ${fsrc.title}`);
+      warnExposure(f);
     }
-    addCoverage(cfg, src, { title: opt.title || src.title, count: files.length, where: placeFile(cfg, src.file, false) }, opt);
-    out.push(`폴더의 문서 ${files.length}개를 넣었다(확인 범위에 묶음 한 행)`);
+    const key = recordFolder(cfg, src, opt.title || src.title, files, opt);
+    out.push(`폴더의 문서 ${files.length}개를 넣었다. 폴더는 확인 범위 표와 보관함 기록(${key})에 남겨 새 문서가 생기면 srs check가 알린다`);
   } else {
-    const meta = { title: opt.title || src.title, kind, date: opt.date, group: Boolean(opt.group || src.kind === 'dir'), where: src.file ? placeFile(cfg, src.file, opt.copy && src.kind === 'file') : null };
+    const meta = { title: opt.title || src.title, kind, date: opt.date, edited: opt.edited, group: Boolean(opt.group || src.kind === 'dir'), copy: opt.copy && src.kind === 'file' };
     const id = registerSource(cfg, get, src, meta, opt);
-    out.push(`${id}  ${src.ko} · ${kind.ko}(순위 ${kind.rank})  ${meta.title || '(제목 없음)'}${meta.group ? '  [묶음: 하위 문서를 모두 열어 한 행씩 넣는다]' : ''}`);
+    out.push(`${id}  ${src.ko} · ${kind.ko}(순위 ${kind.rank})  ${meta.title || '(제목 없음)'}${meta.group ? '  [묶음: 하위 문서를 모두 열어 한 행씩 넣는다]' : ''}${meta.copy ? `  [사본: ${cfg.sourcesDir || 'srs-sources'}/${id}/, git에 올라가지 않음]` : ''}`);
+    if (src.file) warnExposure(src.file);
   }
   if (opt['dry-run']) out.push('(미리 보기, 쓰지 않음)');
   process.stdout.write(`${out.join('\n')}\n`);
 }
 
-// 확인 범위 표에 폴더 묶음 행을 넣는다(전체 수 = 넣은 수)
-function addCoverage(cfg, src, meta, opt) {
-  if (opt['dry-run']) return;
+// 폴더 묶음: 확인 범위 표에 한 행(전체 수 = 넣은 수), 보관함 기록에 문서 목록. 기록 키를 돌려준다
+function recordFolder(cfg, src, title, files, opt) {
+  const where = displayPath(cfg, src.file);
+  const key = `folder:${where}`;
+  if (opt['dry-run']) return key;
   const { get } = loadPages(cfg);
   for (const lang of cfg.langs) {
     const page = get(cfg.pages.sources, lang);
@@ -1865,15 +2012,18 @@ function addCoverage(cfg, src, meta, opt) {
     const { cover } = sourcesTables(page);
     if (!cover) continue;
     const c = cover.header.map(() => '');
-    c[0] = meta.title;
-    if (c.length > 1) c[1] = `\`${meta.where}\``;
-    if (c.length > 2) c[2] = String(meta.count);
-    if (c.length > 3) c[3] = String(meta.count);
+    c[0] = title;
+    if (c.length > 1) c[1] = `\`${where}\``;
+    if (c.length > 3) c[2] = c[3] = String(files.length);
     if (c.length > 4) c[4] = today();
     const raw = [...page.raw];
     insertRow(raw, cover, c);
     fs.writeFileSync(page.file, raw.join('\n'));
   }
+  const m = loadManifest(cfg);
+  m.sources[key] = { type: 'dir', path: where, files: files.map((f) => toPosix(path.relative(src.file, f))), checked: today() };
+  saveManifest(cfg, m);
+  return key;
 }
 
 function runSourceList(cfg, opt) {
@@ -1894,6 +2044,56 @@ function runSourceList(cfg, opt) {
   }
   const unread = list.rows.filter((r) => UNREAD_RE.test((r.cells[rCol] || '').trim())).length;
   out.push(`출처 ${list.rows.length}개, 읽기 전 ${unread}개${cover && cover.rows.length ? `, 묶음 ${cover.rows.length}개` : ''}`);
+  process.stdout.write(`${out.join('\n')}\n`);
+}
+
+const STATE_LABEL = { same: '그대로', changed: '바뀜', missing: '이 기기에 없음', url: '링크', note: '메모' };
+
+function runSourceStatus(cfg, opt) {
+  const list = sourceStatuses(cfg).filter((s) => !opt.changed || s.state === 'changed');
+  const out = list.map((s) => `${s.id}\t${STATE_LABEL[s.state]}\t${s.entry.checked || '-'}\t${s.detail || s.entry.path || s.entry.url || ''}`);
+  const changed = list.filter((s) => s.state === 'changed').length;
+  out.push(`기록 ${list.length}개, 바뀜 ${changed}개${changed ? '. 다시 읽고 SRS에 반영한 뒤 srs source refresh <ID>' : ''}`);
+  process.stdout.write(`${out.join('\n')}\n`);
+}
+
+// 다시 읽고 반영한 출처의 지문·확인일을 지금 원본으로 고친다. 사본을 두던 출처는 새 사본을 날짜별로 남긴다
+function runSourceRefresh(cfg, pos, opt) {
+  const statuses = sourceStatuses(cfg);
+  const ids = opt.all ? statuses.filter((s) => s.state === 'changed').map((s) => s.id) : pos;
+  if (!ids.length) die(opt.all ? '바뀐 출처가 없습니다' : '출처 ID를 주세요. 예: srs source refresh SRC-002 (바뀐 것 모두: --all)');
+  if (opt.edited && !isDate(opt.edited)) die(`--edited 형식이 YYYY-MM-DD가 아닙니다: ${opt.edited}`);
+  const m = loadManifest(cfg);
+  const date = today();
+  const out = [];
+  for (const id of ids) {
+    const e = m.sources[id];
+    if (!e) die(`${id}: 보관함 기록이 없습니다(srs source add로 넣은 출처만 갱신한다). 기록 키는 srs source status`);
+    if (e.type === 'file') {
+      const f = resolveWhere(cfg, e.path);
+      if (!exists(f)) die(`${id}: 이 기기에 원본이 없습니다: ${e.path}`);
+      const before = e.sha256;
+      Object.assign(e, fingerprint(f));
+      if (opt.copy || (e.copies && e.copies.length)) {
+        const c = snapshotSource(cfg, id, f);
+        e.copies = [...new Set([...(e.copies || []), c])];
+      }
+      out.push(`${id}: ${before === e.sha256 ? '내용 그대로' : '새 지문 기록'}${e.copies ? `, 사본 ${e.copies.length}개(${e.copies[e.copies.length - 1]})` : ''}`);
+    } else if (e.type === 'dir') {
+      const d = resolveWhere(cfg, e.path);
+      if (!exists(d)) die(`${id}: 이 기기에 폴더가 없습니다: ${e.path}`);
+      if (opt.each) for (const f of folderFiles(d).filter((x) => !(e.files || []).includes(toPosix(path.relative(d, x))))) out.push(`  ${registerSource(cfg, loadPages(cfg).get, detectSource(f, process.cwd()), { title: path.basename(f).replace(/\.[^.]+$/, ''), kind: kindOf(guessKind(f)), copy: opt.copy }, opt)} 넣음: ${path.basename(f)}`);
+      const now = folderFiles(d).map((f) => toPosix(path.relative(d, f)));
+      const added = now.filter((f) => !(e.files || []).includes(f));
+      e.files = now;
+      out.push(`${id}: 폴더 문서 목록 갱신(새 문서 ${added.length}개)`);
+      if (!opt.each) for (const f of added) out.push(`  새 문서는 출처로 넣는다: srs source add "${path.join(e.path, f)}" (또는 refresh --each)`);
+    } else if (e.type === 'url' && opt.edited) e.edited = opt.edited;
+    e.checked = date;
+    if (!id.startsWith('folder:')) setCheckedDate(cfg, id, date, opt);
+  }
+  if (!opt['dry-run']) saveManifest(cfg, m);
+  out.push(`확인일을 ${date}로 고쳤다(출처 목록, 보관함 기록)`);
   process.stdout.write(`${out.join('\n')}\n`);
 }
 
@@ -1986,19 +2186,23 @@ async function runOnboard(pos, opt) {
     let each = false;
     if (src.type === 'notion' || src.type === 'google' && src.tree) group = await yes('  하위 페이지까지 모두 근거인 묶음인가요?', true);
     if (src.kind === 'dir') each = await yes(`  폴더 안 문서 ${folderFiles(src.file).length}개를 하나씩 넣을까요?`, true);
-    if (src.kind === 'file' || each) copy = await yes(`  저장소(${cfg.sourcesDir || 'srs-sources'}/)에 사본을 둘까요? 공유하면 안 되는 문서(계약서 등)면 n`, false);
+    if (src.kind === 'file' || each) copy = await yes(`  읽은 판을 남기려고 사본을 보관함(${cfg.sourcesDir || 'srs-sources'}/)에 둘까요? git에는 올라가지 않는다`, true);
+    if (src.kind === 'file') {
+      const w = repoExposure(cfg, src.file);
+      if (w) say(`  주의: ${w}`);
+    }
     const before = added.length;
     const pages = loadPages(cfg);
     if (each) {
       for (const f of folderFiles(src.file)) {
         const fsrc = detectSource(f, process.cwd());
-        const id = registerSource(cfg, loadPages(cfg).get, fsrc, { title: fsrc.title, kind, date, where: placeFile(cfg, f, copy) }, {});
+        const id = registerSource(cfg, loadPages(cfg).get, fsrc, { title: fsrc.title, kind, date, copy }, {});
         added.push({ id, label: `${fsrc.ko} · ${fsrc.title}` });
       }
-      addCoverage(cfg, src, { title, count: added.length - before, where: placeFile(cfg, src.file, false) }, {});
+      recordFolder(cfg, src, title, folderFiles(src.file), {});
       say(`  ${added.length - before}개를 넣었다(${added[before] ? added[before].id : ''}~${added[added.length - 1] ? added[added.length - 1].id : ''}).`);
     } else {
-      const id = registerSource(cfg, pages.get, src, { title, kind, date, group: group || src.kind === 'dir', where: src.file ? placeFile(cfg, src.file, copy) : null }, {});
+      const id = registerSource(cfg, pages.get, src, { title, kind, date, group: group || src.kind === 'dir', copy }, {});
       added.push({ id, label: `${src.ko} · ${title}`, group });
       say(`  ${id}로 넣었다.${group ? ' (묶음: 온보딩을 이어 갈 때 하위 문서를 모두 열어 한 행씩 넣는다)' : ''}`);
     }
@@ -2029,9 +2233,13 @@ const HELP = `srs — SRS 키트 도구 (기준: STANDARD.md, 순서: PROCESS.md
   srs source add <링크|파일|폴더|메모> [--kind contract|client|design|decision|code|old] [--title] [--date]
                  [--group] [--each] [--copy] [--dry-run]
       근거 문서 하나를 출처 목록(원문·번역)에 넣는다. --group 하위 문서까지 근거인 묶음, --each 폴더의 문서를 하나씩,
-      --copy 파일 사본을 sourcesDir에 둔다.
+      --copy 파일 사본을 보관함(sourcesDir, git에 올라가지 않음)에 날짜별로 둔다. --edited 링크 문서의 수정일.
   srs source list [--unread]
       출처 목록을 보여 준다. --unread는 아직 읽지 않은 출처만.
+  srs source status [--changed]
+      넣을 때 기록한 지문과 지금 원본을 비교한다(파일 내용, 폴더의 문서 목록). 링크는 확인일·수정일을 보여 준다.
+  srs source refresh <ID…> | --all [--copy] [--each] [--edited YYYY-MM-DD]
+      다시 읽고 반영한 출처의 지문과 확인일을 지금 원본으로 고친다. 사본을 두던 출처는 날짜별 새 사본을 남긴다.
   srs init <저장소> [--name 이름] [--date YYYY-MM-DD] [--example] [--web <앱 폴더>] [--force]
       docs/srs 뼈대와 srs.config.json을 만든다. 있는 파일은 덮어쓰지 않는다.
       --example  예시 기능 페이지(주문 취소와 환불)를 함께 넣는다
@@ -2081,7 +2289,9 @@ function main() {
   if (cmd === 'source') {
     if (pos[0] === 'add') return runSourceAdd(cfg, pos.slice(1), opt);
     if (pos[0] === 'list') return runSourceList(cfg, opt);
-    die('srs source add <위치> | srs source list');
+    if (pos[0] === 'status') return runSourceStatus(cfg, opt);
+    if (pos[0] === 'refresh') return runSourceRefresh(cfg, pos.slice(1), opt);
+    die('srs source add <위치> | list | status | refresh <ID>');
   }
   if (cmd === 'sync') {
     if (pos[0] === 'trace') return runSyncTrace(cfg, opt);

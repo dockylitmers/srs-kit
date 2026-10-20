@@ -61,7 +61,11 @@ SRS의 근거가 될 문서를 하나씩 넣는다. 링크나 파일 경로를 �
 ```
 
 - 받는 것: Notion 페이지·데이터베이스, Google 문서·시트·드라이브 폴더, PDF·Word·한글·엑셀·발표 자료, 이미지, Figma, GitHub 이슈·PR, 웹 페이지, 문서가 든 폴더(안의 문서를 하나씩), "고객사 메신저 대화 9월분" 같은 메모.
-- 받은 문서는 출처 목록(`baseline/sources`)에 ID·종류·순위와 함께 **"읽기 전"**으로 들어간다. 파일 사본은 물어보고 `srs-sources/`에 둔다(기본은 두지 않음).
+- 받은 문서는 출처 목록(`baseline/sources`)에 ID·종류·순위와 함께 **"읽기 전"**으로 들어간다.
+- 파일은 넣을 때 **지문**(내용 해시)을 기록한다. 원본이 바뀌면(폴더면 문서가 늘거나 줄면) `srs check`가 `source-changed`로 알린다. 다시 읽고 SRS에 반영한 뒤 `srs source refresh <ID>`로 지문과 확인일을 새로 적는다.
+- 읽은 판을 남기려면 사본을 **보관함**(`srs-sources/`)에 둔다. 사본은 `srs-sources/<ID>/<날짜>-<파일 이름>`으로 갱신할 때마다 하나씩 쌓인다. 보관함의 `.gitignore`가 사본을 막아 **git에는 지문 기록(`manifest.json`)만 올라간다**. 누가 강제로 올리면 `srs check`가 오류를 낸다.
+- 원본 파일이 저장소 안에 있고 git이 무시하지 않으면 넣을 때 경고한다(계약서를 저장소에 두고 커밋하는 실수).
+- 링크 문서(Notion 등)는 파일처럼 지문을 뜰 수 없다. 읽은 날과 그때의 문서 수정일(`--edited`)을 기록하고, 다시 볼 때 Claude가 지금 수정일과 비교한다.
 - 그다음 Claude Code에서 **"SRS 온보딩 이어서"**라고 하면 읽기 전 출처를 연결된 도구로 연다(Notion은 Notion 연결, PDF·이미지는 파일 읽기, 이슈는 `gh`). 묶음의 하위 문서를 펼쳐 한 행씩 넣고, 출처 요약·엇갈리는 내용·기능 후보·고객사에 물을 것 후보를 보여 준다.
 - 나중에 받은 문서: `srs source add <링크|파일>`. 남은 것: `srs source list --unread`.
 
@@ -93,8 +97,10 @@ srs status
 | 명령 | 하는 일 |
 | --- | --- |
 | `srs onboard [<저장소>]` | 묻고 답하며 세팅하고 근거 문서를 받는다(위 "온보딩") |
-| `srs source add <링크\|파일\|폴더\|메모> [--kind contract\|client\|design\|decision\|code\|old] [--title] [--date] [--group] [--each] [--copy] [--dry-run]` | 근거 문서 하나를 원문·번역 출처 목록에 "읽기 전"으로 넣는다. 종류(순위)는 위치와 파일 이름으로 추정한다. `--group` 하위 문서까지 근거인 묶음(확인 범위에 한 행), `--each` 폴더의 문서를 하나씩, `--copy` 파일 사본을 `sourcesDir`에 |
+| `srs source add <링크\|파일\|폴더\|메모> [--kind contract\|client\|design\|decision\|code\|old] [--title] [--date] [--group] [--each] [--copy] [--edited] [--dry-run]` | 근거 문서 하나를 원문·번역 출처 목록에 "읽기 전"으로 넣는다. 종류(순위)는 위치와 파일 이름으로 추정한다. `--group` 하위 문서까지 근거인 묶음(확인 범위에 한 행), `--each` 폴더의 문서를 하나씩, `--copy` 파일 사본을 보관함에(git에 올라가지 않음), `--edited` 링크 문서의 수정일 |
 | `srs source list [--unread]` | 출처 목록. `--unread`는 읽기 전만 |
+| `srs source status [--changed]` | 넣을 때 기록한 지문과 지금 원본 비교(파일 내용, 폴더의 문서 목록). 링크는 확인일·수정일 |
+| `srs source refresh <ID…>\|--all [--copy] [--each] [--edited]` | 다시 읽고 반영한 출처의 지문·확인일을 새로 적는다. 사본을 두던 출처는 날짜별 새 사본, 폴더는 `--each`로 새 문서를 출처로 넣는다 |
 | `srs init <저장소> [--name] [--date] [--example] [--web <앱 폴더>] [--force]` | `docs/srs` 뼈대와 `srs.config.json`을 만든다. `--web`은 문서 사이트 코드(`web/`이 있을 때)를 앱 폴더에 복사한다. 있는 파일은 건너뛴다 |
 | `srs new <feature\|policy> <slug> --title --code [--description] [--en-title]` | 기능·정책 페이지를 한국어·영어로 만들고 `meta.json`에 넣는다. 같은 `code`가 있으면 멈춘다 |
 | `srs bump <페이지> [--note] [--date] [--lang ko\|en\|all] [--from]` | 한국어 파일을 지금 version 폴더에, 영어 파일을 영어 version 폴더에 남기고(이미 같은 내용이 있으면 건너뜀) 한국어 version을 올린다. 확인됨 페이지는 `draft`로 돌린다. `--lang en`은 번역을 마친 뒤 영어 version을 한국어 버전에 맞춘다. `--from`은 version이 없는 기존 페이지의 지금 날짜 |
@@ -119,7 +125,7 @@ srs status
 | 고객사가 읽는 부분 | 코드 경로, 코드 이름, 이슈 번호, 진행 상태 열, 쉬운 말(문자, 앱 푸시, 이메일) |
 | 규칙 | ID 중복, 페이지 `code`로 시작, 출처 열·출처 ID가 출처 목록에 있음, 숫자 규칙의 예시, "~하면"의 "아니면", 추적표와 ID 일치 |
 | 기능·정책 양식 | 필수 절, `status`·`code`, 확인됨 페이지에 `(제안)` 없음, 현재 버전의 확인 기록 |
-| 출처 목록 | ID 열, 모든 행의 반영 위치(링크 또는 "반영 없음: 이유", 온보딩에서 넣은 "읽기 전"은 경고), ID 중복 |
+| 출처 목록 | ID 열, 모든 행의 반영 위치(링크 또는 "반영 없음: 이유", 온보딩에서 넣은 "읽기 전"은 경고), ID 중복, 넣은 뒤 원본이 바뀜(경고), 보관함 사본이 git에 올라감(오류) |
 
 ### `srs.config.json`
 
@@ -145,7 +151,7 @@ srs status
 | `numbering` | `false` | `true` 또는 `{ "enabled": true, "indexPage": "index" }`. 페이지 번호 검사를 켠다(STANDARD 4절) |
 | `linkText` | `null`(템플릿은 `"title"`) | `"title"`이면 링크 글자를 대상 페이지 제목과 대조한다 |
 | `linkTextAllow` | `[]` | 링크 글자 검사·`sync links`에서 그대로 두는 글자(화면 이름처럼 페이지가 아닌 것을 가리키는 링크) |
-| `sourcesDir` | `srs-sources` | `source add --copy`와 온보딩이 파일 사본을 두는 폴더 |
+| `sourcesDir` | `srs-sources` | 근거 파일 보관함: 사본(git 제외)과 지문 기록 `manifest.json`(git 포함) |
 | `traceSummaryLength` | `80` | `sync trace`가 추적표 요약 칸에 넣는 글자 수 |
 
 
