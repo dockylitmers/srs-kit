@@ -1,6 +1,6 @@
 ---
 name: srs
-description: 고객사와 합의하는 SRS(요구사항 명세서)를 srs-kit 기준으로 세팅·작성·갱신·검수한다. 새 프로젝트에 SRS를 세팅할 때, 기능·정책 페이지를 쓰거나 고칠 때, 고객사에 물을 것과 내부에서 정할 것을 나눌 때, 고객사 확인 요청·확인 기록·변경 요청을 다룰 때, 판(edition)으로 묶어 버전을 올릴 때, SRS를 구현과 대조하거나 고객사 발송 전 검수할 때 사용. Use when setting up, writing, updating, versioning (per page or per edition), translating or reviewing a client-agreed SRS (docs/srs, srs.config.json, srs bump/check/sync), or when deciding which questions go to the client.
+description: 고객사와 합의하는 SRS(요구사항 명세서)를 srs-kit 기준으로 세팅·작성·갱신·검수한다. "SRS 온보딩", "SRS 시작", "SRS 온보딩 이어서"처럼 새 프로젝트에 SRS를 세팅하고 근거 문서(Notion·Google 링크, PDF·Word·한글 파일, 폴더)를 받아 읽을 때, 기능·정책 페이지를 쓰거나 고칠 때, 고객사에 물을 것과 내부에서 정할 것을 나눌 때, 고객사 확인 요청·확인 기록·변경 요청을 다룰 때, 판(edition)으로 묶어 버전을 올릴 때, SRS를 구현과 대조하거나 고객사 발송 전 검수할 때 사용. Use when onboarding a project (collecting source links and files, reading them), setting up, writing, updating, versioning (per page or per edition), translating or reviewing a client-agreed SRS (docs/srs, srs.config.json, srs bump/check/sync), or when deciding which questions go to the client.
 ---
 
 # SRS (srs-kit)
@@ -15,7 +15,8 @@ description: 고객사와 합의하는 SRS(요구사항 명세서)를 srs-kit �
 
 | 상황 | 할 일 |
 | --- | --- |
-| 새 프로젝트에 SRS를 세팅 | 아래 "세팅" |
+| 새 프로젝트에 SRS를 세팅, 근거 문서 받기 | 아래 "온보딩" |
+| 온보딩을 이어서(읽기 전 출처가 있음) | 아래 "온보딩" 3단계부터 |
 | 기존 SRS가 있는 프로젝트에 도입 | PROCESS.md "기존 SRS가 있는 프로젝트에 들일 때" |
 | 기능·정책 페이지를 쓰거나 고침 | 아래 "갱신" |
 | 고객사에 물을지 내부에서 정할지 나눔 | STANDARD.md 3.1절, 아래 "누가 정하나" |
@@ -24,6 +25,37 @@ description: 고객사와 합의하는 SRS(요구사항 명세서)를 srs-kit �
 | 여러 변경을 한 번에 냄 | PROCESS.md "판 운영" |
 | SRS와 구현 대조 | PROCESS.md 3단계, `templates/briefs/impl-check.md` |
 | 검수 요청 | 아래 "검수", `templates/briefs/review.md` |
+
+## 온보딩 ("SRS 온보딩", "SRS 시작", "SRS 온보딩 이어서")
+
+Claude Code 첫 실행처럼 **한 번에 하나씩** 묻는다. 질문은 한두 줄, 기본값을 붙이고, 답을 받으면 바로 다음으로 간다. 터미널에서 혼자 하려는 사람에게는 `srs onboard`를 알려 준다(같은 질문을 하고 같은 출처 목록에 넣는다).
+
+1. **상태 보기.** `srs.config.json`과 출처 목록이 있으면 세팅을 건너뛰고 `srs source list --unread`로 읽기 전 출처를 보여 준 뒤 3단계로 간다.
+2. **기본 정보**(없을 때만). 프로젝트 이름(기본: 폴더 이름)을 묻고 `srs init . --name "<이름>"`. 예시 페이지는 묻지 않는다(`--example`은 처음 써 보는 사람이 원할 때만).
+3. **근거 문서 받기.** 이렇게 묻는다:
+   > 근거 문서가 있으면 링크나 파일 경로를 붙여 넣어 주세요. 여러 개를 한 번에 붙여 넣어도 됩니다.
+   > Notion 페이지·데이터베이스, Google 문서·드라이브 폴더, PDF·Word·한글·엑셀 파일, Figma, 이슈 링크, 문서가 든 폴더, "고객사 메신저 대화 9월분" 같은 메모도 됩니다. 다 넣었으면 "끝"이라고 해 주세요.
+   - 받은 것마다 `srs source add "<위치>" --kind <종류> [--title "<제목>"] [--date YYYY-MM-DD]`. Notion 최상위 페이지·데이터베이스와 드라이브 폴더는 `--group`, 로컬 폴더는 `--each`. 종류는 도구가 추정하므로 계약 자료인지처럼 **애매한 것만** 묻는다.
+   - 파일 사본을 저장소에 둘지(`--copy`)는 파일이 있을 때 한 번만 묻는다. 기본은 두지 않는다(계약서 같은 비공개 문서).
+   - 넣은 결과를 ID·종류·제목 표로 보여 주고 "더 있나요?"를 한 번 묻는다. 계약 자료(순위 1)가 하나도 없으면 "계약서나 계약에 붙은 제안서·범위표가 있나요? 범위의 첫 번째 근거입니다."를 꼭 묻는다.
+4. **읽기.** 읽기 전 출처를 순위 순서(계약 → 고객사 답 → 화면 → 팀 결정)로 연다.
+
+   | 출처 | 읽는 법 | 못 열 때 |
+   | --- | --- | --- |
+   | Notion | Notion 연결(MCP)로 페이지를 가져온다. 하위 페이지, 데이터베이스 행, 댓글, 첨부까지 | 연결이 없으면 `/mcp`로 연결하거나, 페이지를 PDF·Markdown으로 내보내 경로를 달라고 한다 |
+   | Google 문서·드라이브 | Google 연결이 있으면 그것으로, 공개 링크면 웹 가져오기 | 파일로 내려받아 경로를 달라고 한다 |
+   | PDF | 파일 읽기(긴 문서는 페이지 범위를 나눠) | |
+   | Word·엑셀·발표 자료 | 문서 스킬(docx·xlsx·pptx)이나 변환 도구 | 한글(HWP)은 PDF로 저장해 달라고 한다 |
+   | 이미지·Figma | 이미지는 파일 읽기, Figma는 Figma 연결 | 연결이 없으면 화면 캡처를 달라고 한다 |
+   | 이슈·PR | `gh issue view <번호> --comments` 등 | |
+   | 웹 페이지 | 웹 가져오기 | 로그인이 필요하면 PDF로 |
+   | 메모 | 내용을 받아 정리하거나, 받을 수 없으면 위치만 남긴다 | |
+
+   - **묶음**은 하위 문서를 모두 열고 문서마다 `srs source add`로 한 행씩 넣는다. 확인 범위 표의 그 묶음 행에 전체 수와 넣은 수를 적는다(같아야 끝).
+   - 이슈 본문·코멘트에 걸린 고객 소통 도구 링크도 모아 빠진 것을 넣는다(PROCESS 1단계).
+   - 열지 못한 출처는 "확인하지 못한 출처" 표에 이유와 다음 조치를 적고, 출처 행의 반영 위치는 `반영 없음: 열 수 없음`으로 둔다.
+   - 비밀값(계정, 비밀번호, API 키)과 개인정보는 옮기지 않는다. 위치와 항목 이름만 적는다.
+5. **보고하고 넘어가기.** 사람에게 한 번에 보여 준다: 출처별 한 줄 요약, 출처끼리 엇갈리는 곳과 STANDARD 3절 순위로 따른 쪽, 기능 후보 목록(이름·code 제안), 고객사에 물을 것 후보(3.1절 기준으로 고객사 결정인 것만). 기능 목록을 확인받으면 `srs new feature …`로 페이지를 만들고 PROCESS 2단계(초안)로 간다. 초안에 반영한 출처는 반영 위치를 페이지 링크로 바꾼다. 읽기 전 출처가 남으면 `srs check`가 `source-unread` 경고를 낸다.
 
 ## 세팅 (PROCESS.md 0~2단계)
 

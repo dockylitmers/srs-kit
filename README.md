@@ -6,7 +6,7 @@ SRS는 **고객사와 합의한 범위 기준선**이다. 고객사가 기능별
 
 키트는 세 부분이다. 작성 기준과 운영 순서(문서), `srs` 명령 도구, 그리고 Claude Code 스킬(`skill/SKILL.md`)이다. 스킬을 설치하면 Claude가 이 기준과 도구로 SRS를 세팅·작성·검수한다.
 
-버전: 0.2 (바뀐 것은 [STANDARD.md](STANDARD.md) 맨 끝 "이 기준의 변경 이력").
+버전: 0.3 (바뀐 것은 [STANDARD.md](STANDARD.md) 맨 끝 "이 기준의 변경 이력").
 
 ## 들어 있는 것
 
@@ -36,6 +36,35 @@ ln -s ~/srs-kit/skill ~/.claude/skills/srs              # Claude Code 스킬
 
 갱신은 `git -C ~/srs-kit pull`. 스킬이 링크라서 따로 다시 설치하지 않는다.
 
+## 온보딩
+
+처음 세팅은 온보딩으로 한다. Claude Code에서 "SRS 온보딩"이라고 하거나, 터미널에서:
+
+```bash
+cd ~/work/my-project
+srs onboard
+```
+
+```
+1/3  기본 정보
+프로젝트 이름 [my-project] ›
+2/3  근거 문서
+SRS의 근거가 될 문서를 하나씩 넣는다. 링크나 파일 경로를 붙여 넣고 Enter.
+문서 1 › https://www.notion.so/acme/Requirements-Board-0123…
+  → Notion: Requirements Board
+  종류: 1 계약 자료 · 2 고객사 답·요청 · 3 화면 · 4 팀 결정 · 5 현재 구현 · 6 과거 자료
+  번호 [2] ›
+  하위 페이지까지 모두 근거인 묶음인가요? (Y/n) ›
+  SRC-001로 넣었다.
+문서 2 › ~/Downloads/계약서_v2.pdf
+  …
+```
+
+- 받는 것: Notion 페이지·데이터베이스, Google 문서·시트·드라이브 폴더, PDF·Word·한글·엑셀·발표 자료, 이미지, Figma, GitHub 이슈·PR, 웹 페이지, 문서가 든 폴더(안의 문서를 하나씩), "고객사 메신저 대화 9월분" 같은 메모.
+- 받은 문서는 출처 목록(`baseline/sources`)에 ID·종류·순위와 함께 **"읽기 전"**으로 들어간다. 파일 사본은 물어보고 `srs-sources/`에 둔다(기본은 두지 않음).
+- 그다음 Claude Code에서 **"SRS 온보딩 이어서"**라고 하면 읽기 전 출처를 연결된 도구로 연다(Notion은 Notion 연결, PDF·이미지는 파일 읽기, 이슈는 `gh`). 묶음의 하위 문서를 펼쳐 한 행씩 넣고, 출처 요약·엇갈리는 내용·기능 후보·고객사에 물을 것 후보를 보여 준다.
+- 나중에 받은 문서: `srs source add <링크|파일>`. 남은 것: `srs source list --unread`.
+
 ## 빠른 시작
 
 ```bash
@@ -63,6 +92,9 @@ srs status
 
 | 명령 | 하는 일 |
 | --- | --- |
+| `srs onboard [<저장소>]` | 묻고 답하며 세팅하고 근거 문서를 받는다(위 "온보딩") |
+| `srs source add <링크\|파일\|폴더\|메모> [--kind contract\|client\|design\|decision\|code\|old] [--title] [--date] [--group] [--each] [--copy] [--dry-run]` | 근거 문서 하나를 원문·번역 출처 목록에 "읽기 전"으로 넣는다. 종류(순위)는 위치와 파일 이름으로 추정한다. `--group` 하위 문서까지 근거인 묶음(확인 범위에 한 행), `--each` 폴더의 문서를 하나씩, `--copy` 파일 사본을 `sourcesDir`에 |
+| `srs source list [--unread]` | 출처 목록. `--unread`는 읽기 전만 |
 | `srs init <저장소> [--name] [--date] [--example] [--web <앱 폴더>] [--force]` | `docs/srs` 뼈대와 `srs.config.json`을 만든다. `--web`은 문서 사이트 코드(`web/`이 있을 때)를 앱 폴더에 복사한다. 있는 파일은 건너뛴다 |
 | `srs new <feature\|policy> <slug> --title --code [--description] [--en-title]` | 기능·정책 페이지를 한국어·영어로 만들고 `meta.json`에 넣는다. 같은 `code`가 있으면 멈춘다 |
 | `srs bump <페이지> [--note] [--date] [--lang ko\|en\|all] [--from]` | 한국어 파일을 지금 version 폴더에, 영어 파일을 영어 version 폴더에 남기고(이미 같은 내용이 있으면 건너뜀) 한국어 version을 올린다. 확인됨 페이지는 `draft`로 돌린다. `--lang en`은 번역을 마친 뒤 영어 version을 한국어 버전에 맞춘다. `--from`은 version이 없는 기존 페이지의 지금 날짜 |
@@ -87,7 +119,7 @@ srs status
 | 고객사가 읽는 부분 | 코드 경로, 코드 이름, 이슈 번호, 진행 상태 열, 쉬운 말(문자, 앱 푸시, 이메일) |
 | 규칙 | ID 중복, 페이지 `code`로 시작, 출처 열·출처 ID가 출처 목록에 있음, 숫자 규칙의 예시, "~하면"의 "아니면", 추적표와 ID 일치 |
 | 기능·정책 양식 | 필수 절, `status`·`code`, 확인됨 페이지에 `(제안)` 없음, 현재 버전의 확인 기록 |
-| 출처 목록 | ID 열, 모든 행의 반영 위치(링크 또는 "반영 없음: 이유"), ID 중복 |
+| 출처 목록 | ID 열, 모든 행의 반영 위치(링크 또는 "반영 없음: 이유", 온보딩에서 넣은 "읽기 전"은 경고), ID 중복 |
 
 ### `srs.config.json`
 
@@ -113,6 +145,7 @@ srs status
 | `numbering` | `false` | `true` 또는 `{ "enabled": true, "indexPage": "index" }`. 페이지 번호 검사를 켠다(STANDARD 4절) |
 | `linkText` | `null`(템플릿은 `"title"`) | `"title"`이면 링크 글자를 대상 페이지 제목과 대조한다 |
 | `linkTextAllow` | `[]` | 링크 글자 검사·`sync links`에서 그대로 두는 글자(화면 이름처럼 페이지가 아닌 것을 가리키는 링크) |
+| `sourcesDir` | `srs-sources` | `source add --copy`와 온보딩이 파일 사본을 두는 폴더 |
 | `traceSummaryLength` | `80` | `sync trace`가 추적표 요약 칸에 넣는 글자 수 |
 
 

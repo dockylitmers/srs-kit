@@ -52,6 +52,8 @@ const DEFAULT_CONFIG = {
   linkTextAllow: [],
   // srs sync trace가 추적표 요약 칸에 넣는 글자 수
   traceSummaryLength: 80,
+  // srs source add --copy, srs onboard가 근거 파일 사본을 두는 폴더(저장소 기준)
+  sourcesDir: 'srs-sources',
 };
 
 const STATUSES = ['draft', 'in-review', 'confirmed'];
@@ -181,7 +183,7 @@ function escapeRe(s) {
 }
 
 function parseArgs(argv) {
-  const BOOL = new Set(['example', 'force', 'json', 'strict', 'help', 'verbose', 'all', 'edition', 'dry-run']);
+  const BOOL = new Set(['example', 'force', 'json', 'strict', 'help', 'verbose', 'all', 'edition', 'dry-run', 'copy', 'each', 'group', 'unread', 'quiet']);
   const pos = [];
   const opt = {};
   for (let i = 0; i < argv.length; i++) {
@@ -875,7 +877,8 @@ function runCheck(cfg, opt) {
         }
         const cell = (r.cells[rCol] || '').trim();
         const rawCell = r.raw[rCol] || '';
-        if (!cell || /^([-—]|TBD|확인\s?필요|없음|미정)$/i.test(cell)) add('error', fileRel, r.n, 'source-unreflected', `${label}: 반영 위치가 비어 있습니다(반영할 내용이 없으면 "반영 없음: 이유")`);
+        if (UNREAD_RE.test(cell)) add('warn', fileRel, r.n, 'source-unread', `${label}: 아직 읽지 않은 출처입니다. 읽고 반영 위치를 채운다(온보딩에서 넣은 출처)`);
+        else if (!cell || /^([-—]|TBD|확인\s?필요|없음|미정)$/i.test(cell)) add('error', fileRel, r.n, 'source-unreflected', `${label}: 반영 위치가 비어 있습니다(반영할 내용이 없으면 "반영 없음: 이유")`);
         else if (/^(반영 없음|Not reflected)/i.test(cell)) {
           if (!/[:：]\s*\S/.test(cell)) add('warn', fileRel, r.n, 'source-no-reason', `${label}: "반영 없음" 뒤에 이유를 쓴다`);
         } else if (!/\]\(/.test(rawCell)) add('warn', fileRel, r.n, 'source-no-link', `${label}: 반영 위치에 페이지 링크가 없습니다`);
@@ -1590,6 +1593,7 @@ function runInit(pos, opt) {
     };
     copyTree(WEB_TEMPLATE_DIR, webAbs, webVars, log);
   }
+  if (opt.quiet) return log;
   const out = [`대상: ${shown(root) || '.'}`, `만든 파일 ${log.created.length}개`];
   for (const f of log.created) out.push(`  + ${f}`);
   if (log.skipped.length) {
@@ -1638,11 +1642,396 @@ function runNew(cfg, pos, opt) {
   process.stdout.write(`${out.join('\n')}\n`);
 }
 
+// ---------------------------------------------------------------- 출처 등록(source)과 온보딩(onboard)
+
+const UNREAD = { ko: '읽기 전', en: 'Not read yet' };
+const UNREAD_RE = /^(읽기 전|Not read yet)$/i;
+
+// 출처 종류와 순위(STANDARD 3절)
+const SOURCE_KINDS = [
+  { key: 'contract', rank: 1, ko: '계약 자료', en: 'Contract', hint: '계약서, 추가 계약, 계약에 붙은 제안서·견적·범위표' },
+  { key: 'client', rank: 3, ko: '고객사 답·요청', en: 'Client answer or request', hint: '요청 게시판, 메일, 메신저, 회의록, 고객사가 쓴 기획 문서' },
+  { key: 'design', rank: 4, ko: '화면', en: 'Screens', hint: '디자인, 목업, 와이어프레임, 화면 캡처' },
+  { key: 'decision', rank: 5, ko: '팀 결정', en: 'Team decision', hint: '이슈의 결정 코멘트, 기술 스펙, 내부 회의록' },
+  { key: 'code', rank: 6, ko: '현재 구현', en: 'Current build', hint: '코드 저장소, 운영·테스트 화면(사실 확인용)' },
+  { key: 'old', rank: 7, ko: '과거 자료', en: 'Past material', hint: '초기 기획서, 지난 견적, 이후 답으로 바뀐 것' },
+];
+
+const FILE_TYPES = [
+  [/\.pdf$/i, 'PDF', 'PDF'],
+  [/\.(docx?|rtf|odt)$/i, 'Word', 'Word'],
+  [/\.(hwpx?)$/i, '한글 문서', 'HWP'],
+  [/\.(xlsx?|csv|tsv|numbers)$/i, '표', 'Spreadsheet'],
+  [/\.(pptx?|key)$/i, '발표 자료', 'Slides'],
+  [/\.(png|jpe?g|gif|webp|heic)$/i, '이미지', 'Image'],
+  [/\.(mdx?|txt)$/i, '텍스트', 'Text'],
+  [/\.(eml|msg)$/i, '메일', 'Email'],
+];
+
+function expandHome(p) {
+  return p.replace(/^~(?=$|\/)/, process.env.HOME || '~');
+}
+
+// 붙여 넣은 위치가 무엇인지 알아낸다
+function detectSource(input, root) {
+  const loc = input.trim().replace(/^<(.+)>$/, '$1').replace(/^["'](.+)["']$/, '$1');
+  if (/^https?:\/\//i.test(loc)) {
+    let host = '';
+    let u = null;
+    try {
+      u = new URL(loc);
+      host = u.hostname.toLowerCase();
+    } catch {
+      /* 그대로 웹 페이지로 본다 */
+    }
+    const pathname = u ? decodeURIComponent(u.pathname) : '';
+    const base = { kind: 'url', url: loc };
+    if (/(^|\.)notion\.(so|site)$|(^|\.)notion\.com$/.test(host)) {
+      const last = pathname.split('/').filter(Boolean).pop() || '';
+      const title = last.replace(/-?[0-9a-f]{32}$/i, '').replace(/-/g, ' ').trim();
+      return { ...base, type: 'notion', ko: 'Notion', en: 'Notion', title, guess: 'client', tree: true };
+    }
+    if (/docs\.google\.com|drive\.google\.com/.test(host)) {
+      const t = /\/(document|spreadsheets|presentation|forms)\//.exec(pathname);
+      const kinds = { document: ['Google 문서', 'Google Docs'], spreadsheets: ['Google 시트', 'Google Sheets'], presentation: ['Google 슬라이드', 'Google Slides'], forms: ['Google 설문', 'Google Forms'] };
+      const [ko, en] = t ? kinds[t[1]] : ['Google 드라이브', 'Google Drive'];
+      return { ...base, type: 'google', ko, en, title: '', guess: 'client', tree: !t };
+    }
+    if (/figma\.com$/.test(host)) {
+      const parts = pathname.split('/').filter(Boolean);
+      return { ...base, type: 'figma', ko: 'Figma', en: 'Figma', title: (parts[2] || '').replace(/-/g, ' '), guess: 'design' };
+    }
+    if (/github\.com$/.test(host)) {
+      const m = /^\/([^/]+)\/([^/]+)\/(issues|pull|discussions)\/(\d+)/.exec(pathname);
+      if (m) return { ...base, type: 'github', ko: m[3] === 'pull' ? 'GitHub PR' : 'GitHub 이슈', en: m[3] === 'pull' ? 'GitHub PR' : 'GitHub issue', title: `${m[2]}#${m[4]}`, guess: 'decision' };
+      return { ...base, type: 'github', ko: 'GitHub', en: 'GitHub', title: pathname.split('/').filter(Boolean).slice(0, 2).join('/'), guess: 'code' };
+    }
+    if (/atlassian\.net$|jira/.test(host)) return { ...base, type: 'jira', ko: '이슈 트래커', en: 'Issue tracker', title: '', guess: 'decision' };
+    if (/slack\.com$/.test(host)) return { ...base, type: 'slack', ko: '메신저', en: 'Chat', title: '', guess: 'client' };
+    const fileType = FILE_TYPES.find(([re]) => re.test(pathname));
+    const last = pathname.split('/').filter(Boolean).pop() || host;
+    if (fileType) return { ...base, type: 'file-url', ko: fileType[1], en: fileType[2], title: last.replace(/\.[^.]+$/, ''), guess: guessKind(last) };
+    return { ...base, type: 'web', ko: '웹 페이지', en: 'Web page', title: last, guess: 'client' };
+  }
+  const abs = path.resolve(root, expandHome(loc));
+  if (exists(abs)) {
+    const name = path.basename(abs);
+    if (fs.statSync(abs).isDirectory()) return { kind: 'dir', file: abs, type: 'dir', ko: '폴더', en: 'Folder', title: name, guess: guessKind(name), tree: true };
+    const fileType = FILE_TYPES.find(([re]) => re.test(name));
+    return { kind: 'file', file: abs, type: 'file', ko: fileType ? fileType[1] : '파일', en: fileType ? fileType[2] : 'File', title: name.replace(/\.[^.]+$/, ''), guess: guessKind(name) };
+  }
+  if (/^(\/|~\/|\.\.?\/)/.test(loc) || /\.[a-z0-9]{2,5}$/i.test(loc) && !/\s/.test(loc)) return { kind: 'missing', file: abs };
+  // 링크도 파일도 아니면 메모(예: "고객사 메신저 대화 9/1~9/30, PM이 보관")
+  return { kind: 'note', type: 'note', ko: '메모', en: 'Note', title: loc.length > 60 ? `${loc.slice(0, 60)}…` : loc, note: loc, guess: 'client' };
+}
+
+function guessKind(name) {
+  if (/계약|contract|agreement|견적|quot|제안|proposal|범위|scope|sow/i.test(name)) return 'contract';
+  if (/디자인|design|목업|mockup|wire|와이어|화면|screen|figma|\.(png|jpe?g|gif|webp|heic)$/i.test(name)) return 'design';
+  if (/회의|meeting|minutes|요청|request|답변|qna|q&a/i.test(name)) return 'client';
+  if (/초기|old|구버전|legacy|이전/i.test(name)) return 'old';
+  return 'client';
+}
+
+function kindOf(keyOrRank) {
+  if (keyOrRank === undefined || keyOrRank === null || keyOrRank === '') return null;
+  return SOURCE_KINDS.find((k) => k.key === keyOrRank || String(k.rank) === String(keyOrRank)) || null;
+}
+
+function sourcesTables(page) {
+  const list = page.tables.find((t) => columnIndex(t, /(반영|Reflected|Used in)/i) >= 0 && columnIndex(t, /^(ID|출처 ID|Source ID)$/i) >= 0);
+  const cover = page.tables.find((t) => /^(출처 묶음|Source group)$/i.test((t.header[0] || '').trim()));
+  return { list, cover };
+}
+
+function nextSourceId(page) {
+  const { list } = sourcesTables(page);
+  let max = 0;
+  for (const r of list ? list.rows : []) {
+    const m = /^SRC-(\d+)$/.exec((r.cells[0] || '').trim());
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return `SRC-${String(max + 1).padStart(3, '0')}`;
+}
+
+function insertRow(raw, table, cells) {
+  const at = table.rows.length ? table.rows[table.rows.length - 1].n : table.n + 1; // raw 줄 번호(0부터)로 마지막 행 다음
+  raw.splice(at, 0, `| ${cells.map(cellOut).join(' | ')} |`);
+}
+
+// 출처 한 개(또는 묶음 행)를 원문·번역 출처 목록에 넣는다. 쓴 ID를 돌려준다
+function registerSource(cfg, get, src, meta, opt) {
+  const primaryPage = get(cfg.pages.sources);
+  if (!primaryPage) die(`출처 목록 페이지(${cfg.pages.sources})가 없습니다. 먼저 srs init`);
+  const id = opt.id || nextSourceId(primaryPage);
+  const date = opt.checked || today();
+  for (const lang of cfg.langs) {
+    const page = get(cfg.pages.sources, lang);
+    if (!page) continue;
+    const { list, cover } = sourcesTables(page);
+    if (!list) die(`${shown(page.file)}에 "ID … 반영 위치" 열이 있는 출처 표가 없습니다`);
+    const en = lang !== 'ko';
+    const typeLabel = en ? src.en : src.ko;
+    const title = meta.title || (en ? 'Untitled' : '제목 없음');
+    let cell;
+    if (src.url) cell = `[${title.replace(/[[\]]/g, '')}](${src.url}) · ${typeLabel}`;
+    else if (src.file) cell = `${title} · ${typeLabel} · \`${meta.where}\``;
+    else cell = `${title} · ${typeLabel}`;
+    if (meta.group) cell += en ? ' · group' : ' · 묶음';
+    const cells = list.header.map(() => '');
+    const col = (re) => columnIndex(list, re);
+    const set = (re, v) => {
+      const i = col(re);
+      if (i >= 0) cells[i] = v;
+    };
+    cells[0] = id;
+    set(/^(출처|Source)$/i, cell);
+    set(/^(순위|Rank)$/i, String(meta.kind.rank));
+    set(/^(문서 날짜|Document date)$/i, meta.date || '');
+    set(/^(확인일|Checked on)$/i, date);
+    set(/(반영|Reflected|Used in)/i, en ? UNREAD.en : UNREAD.ko);
+    const raw = [...page.raw];
+    // 아래쪽 표부터 넣어야 위쪽 표의 줄 번호가 그대로다
+    const jobs = [[list, cells]];
+    if (meta.group && cover) {
+      const c = cover.header.map(() => '');
+      c[0] = title;
+      if (c.length > 1) c[1] = src.url ? `[${en ? 'link' : '링크'}](${src.url})` : `\`${meta.where || ''}\``;
+      if (c.length > 4) c[4] = date;
+      jobs.push([cover, c]);
+    }
+    jobs.sort((a, b) => b[0].n - a[0].n);
+    for (const [t, c] of jobs) insertRow(raw, t, c);
+    if (!opt['dry-run']) fs.writeFileSync(page.file, raw.join(page.text.includes('\r\n') ? '\r\n' : '\n'));
+  }
+  return id;
+}
+
+// 로컬 파일 위치를 저장소 기준으로 적는다. --copy면 sourcesDir로 복사한다
+function placeFile(cfg, file, copy) {
+  if (copy) {
+    const dir = path.resolve(cfg.root, cfg.sourcesDir || 'srs-sources');
+    fs.mkdirSync(dir, { recursive: true });
+    let dest = path.join(dir, path.basename(file));
+    if (exists(dest) && read(dest) !== read(file)) dest = path.join(dir, `${Date.now()}-${path.basename(file)}`);
+    if (!exists(dest)) fs.copyFileSync(file, dest);
+    return toPosix(path.relative(cfg.root, dest));
+  }
+  const rel = path.relative(cfg.root, file);
+  if (!rel.startsWith('..')) return toPosix(rel);
+  const home = process.env.HOME;
+  return home && file.startsWith(home) ? `~/${toPosix(path.relative(home, file))}` : toPosix(file);
+}
+
+function folderFiles(dir) {
+  return walk(dir).filter((f) => FILE_TYPES.some(([re]) => re.test(f))).slice(0, 500);
+}
+
+function runSourceAdd(cfg, pos, opt) {
+  const input = pos.join(' ');
+  if (!input) die('위치를 주세요. 예: srs source add https://www.notion.so/… --kind client');
+  const { get } = loadPages(cfg);
+  const src = detectSource(input, process.cwd());
+  if (src.kind === 'missing') die(`파일이 없습니다: ${src.file}`);
+  const kind = kindOf(opt.kind ?? opt.rank) || kindOf(src.guess);
+  if ((opt.kind || opt.rank) && !kindOf(opt.kind ?? opt.rank)) die(`--kind는 ${SOURCE_KINDS.map((k) => k.key).join(', ')} 중 하나, 또는 --rank 1·3~7`);
+  if (opt.date && !isDate(opt.date)) die(`--date 형식이 YYYY-MM-DD가 아닙니다: ${opt.date}`);
+  const out = [];
+  if (src.kind === 'dir' && opt.each) {
+    const files = folderFiles(src.file);
+    for (const f of files) {
+      const fsrc = detectSource(f, process.cwd());
+      const id = registerSource(cfg, loadPages(cfg).get, fsrc, { title: fsrc.title, kind: kindOf(opt.kind ?? opt.rank) || kindOf(fsrc.guess), date: opt.date, where: placeFile(cfg, f, opt.copy) }, opt);
+      out.push(`  ${id}  ${fsrc.ko}  ${fsrc.title}`);
+    }
+    addCoverage(cfg, src, { title: opt.title || src.title, count: files.length, where: placeFile(cfg, src.file, false) }, opt);
+    out.push(`폴더의 문서 ${files.length}개를 넣었다(확인 범위에 묶음 한 행)`);
+  } else {
+    const meta = { title: opt.title || src.title, kind, date: opt.date, group: Boolean(opt.group || src.kind === 'dir'), where: src.file ? placeFile(cfg, src.file, opt.copy && src.kind === 'file') : null };
+    const id = registerSource(cfg, get, src, meta, opt);
+    out.push(`${id}  ${src.ko} · ${kind.ko}(순위 ${kind.rank})  ${meta.title || '(제목 없음)'}${meta.group ? '  [묶음: 하위 문서를 모두 열어 한 행씩 넣는다]' : ''}`);
+  }
+  if (opt['dry-run']) out.push('(미리 보기, 쓰지 않음)');
+  process.stdout.write(`${out.join('\n')}\n`);
+}
+
+// 확인 범위 표에 폴더 묶음 행을 넣는다(전체 수 = 넣은 수)
+function addCoverage(cfg, src, meta, opt) {
+  if (opt['dry-run']) return;
+  const { get } = loadPages(cfg);
+  for (const lang of cfg.langs) {
+    const page = get(cfg.pages.sources, lang);
+    if (!page) continue;
+    const { cover } = sourcesTables(page);
+    if (!cover) continue;
+    const c = cover.header.map(() => '');
+    c[0] = meta.title;
+    if (c.length > 1) c[1] = `\`${meta.where}\``;
+    if (c.length > 2) c[2] = String(meta.count);
+    if (c.length > 3) c[3] = String(meta.count);
+    if (c.length > 4) c[4] = today();
+    const raw = [...page.raw];
+    insertRow(raw, cover, c);
+    fs.writeFileSync(page.file, raw.join('\n'));
+  }
+}
+
+function runSourceList(cfg, opt) {
+  const { get } = loadPages(cfg);
+  const page = get(cfg.pages.sources);
+  if (!page) die(`출처 목록 페이지(${cfg.pages.sources})가 없습니다`);
+  const { list, cover } = sourcesTables(page);
+  const rCol = columnIndex(list, /(반영|Reflected|Used in)/i);
+  const sCol = columnIndex(list, /^(출처|Source)$/i);
+  const rkCol = columnIndex(list, /^(순위|Rank)$/i);
+  const rows = list.rows.filter((r) => !opt.unread || UNREAD_RE.test((r.cells[rCol] || '').trim()));
+  const out = [];
+  for (const r of rows) {
+    const raw = r.raw[sCol] || '';
+    const link = /\]\(([^)]+)\)/.exec(raw);
+    const file = /`([^`]+)`/.exec(raw);
+    out.push(`${r.cells[0]}\t순위 ${r.cells[rkCol] || '-'}\t${(r.cells[rCol] || '').trim()}\t${plainText(r.cells[sCol])}${link ? `\t${link[1]}` : file ? `\t${file[1]}` : ''}`);
+  }
+  const unread = list.rows.filter((r) => UNREAD_RE.test((r.cells[rCol] || '').trim())).length;
+  out.push(`출처 ${list.rows.length}개, 읽기 전 ${unread}개${cover && cover.rows.length ? `, 묶음 ${cover.rows.length}개` : ''}`);
+  process.stdout.write(`${out.join('\n')}\n`);
+}
+
+// ---------------------------------------------------------------- onboard
+
+async function runOnboard(pos, opt) {
+  const readline = require('node:readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY });
+  const lines = [];
+  const waiters = [];
+  let closed = false;
+  rl.on('line', (l) => (waiters.length ? waiters.shift()(l) : lines.push(l)));
+  rl.on('close', () => {
+    closed = true;
+    while (waiters.length) waiters.shift()(null);
+  });
+  const say = (s = '') => process.stdout.write(`${s}\n`);
+  const ask = (q, def) => {
+    process.stdout.write(`${q}${def ? ` [${def}]` : ''} › `);
+    return new Promise((resolve) => {
+      const done = (l) => {
+        if (!process.stdin.isTTY) process.stdout.write(`${l ?? ''}\n`);
+        resolve(l === null ? null : l.trim() || def || '');
+      };
+      if (lines.length) done(lines.shift());
+      else if (closed) done(null);
+      else waiters.push(done);
+    });
+  };
+  const yes = async (q, def = true) => {
+    const a = await ask(`${q} (${def ? 'Y/n' : 'y/N'})`);
+    if (a === null || a === '') return def;
+    return /^(y|yes|네|예|응|ㅇ)/i.test(a);
+  };
+
+  const root = path.resolve(pos[0] || opt.root || findRoot(process.cwd()));
+  say('');
+  say('SRS 온보딩');
+  say('──────────');
+  say('고객사와 합의할 SRS를 이 저장소에 세팅하고, 근거 문서를 출처 목록에 모은다.');
+  say(`저장소: ${root}`);
+  say('');
+
+  // 1. 세팅
+  let cfg = loadConfig({ ...opt, root });
+  if (!exists(path.join(cfg.docsAbs, `${cfg.pages.sources}.mdx`))) {
+    say('1/3  기본 정보');
+    const name = await ask('프로젝트 이름', path.basename(root));
+    if (name === null) return rl.close();
+    const example = await yes('예시 기능 페이지(주문 취소와 환불)를 함께 넣을까요?', false);
+    const log = runInit([root], { ...opt, name, example, quiet: true, force: exists(cfg.docsAbs) });
+    say(`  docs/srs 뼈대와 srs.config.json을 만들었다(파일 ${log.created.length}개).`);
+    cfg = loadConfig({ ...opt, root });
+  } else {
+    say('1/3  기본 정보: 이미 세팅돼 있다. 근거 문서만 더 넣는다.');
+  }
+  say('');
+
+  // 2. 근거 문서
+  say('2/3  근거 문서');
+  say('SRS의 근거가 될 문서를 하나씩 넣는다. 링크나 파일 경로를 붙여 넣고 Enter.');
+  say('  예) Notion 페이지·데이터베이스 링크, Google 문서·드라이브 폴더, PDF·Word·한글·엑셀 파일,');
+  say('      Figma 링크, 이슈 링크, 문서가 든 폴더, 또는 "고객사 메신저 대화 9월분" 같은 메모');
+  say('  파일은 Finder에서 터미널로 끌어다 놓으면 경로가 들어간다. 다 넣었으면 빈 줄로 Enter.');
+  say('');
+  const added = [];
+  let asked = 0;
+  for (;;) {
+    const input = await ask(`문서 ${++asked}`);
+    if (input === null || input === '') break;
+    const src = detectSource(input.replace(/\\ /g, ' '), process.cwd());
+    if (src.kind === 'missing') {
+      say(`  파일이 없습니다: ${src.file}. 다시 넣어 주세요.`);
+      continue;
+    }
+    say(`  → ${src.ko}${src.title ? `: ${src.title}` : ''}`);
+    const title = await ask('  제목', src.title || undefined);
+    if (title === null) break;
+    say(`  종류: ${SOURCE_KINDS.map((k, i) => `${i + 1} ${k.ko}`).join(' · ')}`);
+    const guessIdx = SOURCE_KINDS.findIndex((k) => k.key === src.guess) + 1;
+    const pick = await ask('  번호', String(guessIdx));
+    const kind = SOURCE_KINDS[Number(pick) - 1] || SOURCE_KINDS[guessIdx - 1];
+    let date = await ask('  문서 날짜(YYYY-MM-DD, 모르면 Enter)');
+    if (date && !isDate(date)) {
+      say('  날짜 형식이 아니라 비워 둔다.');
+      date = '';
+    }
+    let group = false;
+    let copy = false;
+    let each = false;
+    if (src.type === 'notion' || src.type === 'google' && src.tree) group = await yes('  하위 페이지까지 모두 근거인 묶음인가요?', true);
+    if (src.kind === 'dir') each = await yes(`  폴더 안 문서 ${folderFiles(src.file).length}개를 하나씩 넣을까요?`, true);
+    if (src.kind === 'file' || each) copy = await yes(`  저장소(${cfg.sourcesDir || 'srs-sources'}/)에 사본을 둘까요? 공유하면 안 되는 문서(계약서 등)면 n`, false);
+    const before = added.length;
+    const pages = loadPages(cfg);
+    if (each) {
+      for (const f of folderFiles(src.file)) {
+        const fsrc = detectSource(f, process.cwd());
+        const id = registerSource(cfg, loadPages(cfg).get, fsrc, { title: fsrc.title, kind, date, where: placeFile(cfg, f, copy) }, {});
+        added.push({ id, label: `${fsrc.ko} · ${fsrc.title}` });
+      }
+      addCoverage(cfg, src, { title, count: added.length - before, where: placeFile(cfg, src.file, false) }, {});
+      say(`  ${added.length - before}개를 넣었다(${added[before] ? added[before].id : ''}~${added[added.length - 1] ? added[added.length - 1].id : ''}).`);
+    } else {
+      const id = registerSource(cfg, pages.get, src, { title, kind, date, group: group || src.kind === 'dir', where: src.file ? placeFile(cfg, src.file, copy) : null }, {});
+      added.push({ id, label: `${src.ko} · ${title}`, group });
+      say(`  ${id}로 넣었다.${group ? ' (묶음: 온보딩을 이어 갈 때 하위 문서를 모두 열어 한 행씩 넣는다)' : ''}`);
+    }
+    say('');
+  }
+  rl.close();
+
+  // 3. 마무리
+  say('3/3  다음 단계');
+  if (!added.length) say('넣은 문서가 없다. 나중에 srs onboard를 다시 하거나 srs source add <링크|파일>로 넣는다.');
+  else {
+    say(`근거 문서 ${added.length}개를 출처 목록(${cfg.docsDir}/${cfg.pages.sources})에 "읽기 전"으로 넣었다.`);
+    for (const a of added) say(`  ${a.id}  ${a.label}`);
+  }
+  say('');
+  say('Claude Code에서 "SRS 온보딩 이어서"라고 하면, 읽기 전 출처를 열어 읽고(Notion·PDF·이미지·링크),');
+  say('묶음의 하위 문서를 펼치고, 기능 목록과 첫 초안을 만든다. 남은 출처는 srs source list --unread.');
+}
+
 // ---------------------------------------------------------------- main
 
 const HELP = `srs — SRS 키트 도구 (기준: STANDARD.md, 순서: PROCESS.md)
 
 사용법
+  srs onboard [<저장소>]
+      처음 세팅을 묻고 답하며 한다: 기본 정보 → 근거 문서(Notion·Google 링크, PDF·Word·한글 파일, 폴더, 메모)를
+      하나씩 붙여 넣으면 출처 목록에 "읽기 전"으로 넣는다. 이어서 Claude Code에서 "SRS 온보딩 이어서".
+  srs source add <링크|파일|폴더|메모> [--kind contract|client|design|decision|code|old] [--title] [--date]
+                 [--group] [--each] [--copy] [--dry-run]
+      근거 문서 하나를 출처 목록(원문·번역)에 넣는다. --group 하위 문서까지 근거인 묶음, --each 폴더의 문서를 하나씩,
+      --copy 파일 사본을 sourcesDir에 둔다.
+  srs source list [--unread]
+      출처 목록을 보여 준다. --unread는 아직 읽지 않은 출처만.
   srs init <저장소> [--name 이름] [--date YYYY-MM-DD] [--example] [--web <앱 폴더>] [--force]
       docs/srs 뼈대와 srs.config.json을 만든다. 있는 파일은 덮어쓰지 않는다.
       --example  예시 기능 페이지(주문 취소와 환불)를 함께 넣는다
@@ -1679,6 +2068,7 @@ function main() {
     return;
   }
   if (cmd === 'init') return runInit(pos, opt);
+  if (cmd === 'onboard') return runOnboard(pos, opt);
   const cfg = loadConfig(opt);
   if (cmd === 'check') {
     const levels = printCheck(runCheck(cfg, opt), cfg, opt);
@@ -1688,6 +2078,11 @@ function main() {
   if (cmd === 'status') return runStatus(cfg, opt);
   if (cmd === 'bump') return runBump(cfg, pos, opt);
   if (cmd === 'new') return runNew(cfg, pos, opt);
+  if (cmd === 'source') {
+    if (pos[0] === 'add') return runSourceAdd(cfg, pos.slice(1), opt);
+    if (pos[0] === 'list') return runSourceList(cfg, opt);
+    die('srs source add <위치> | srs source list');
+  }
   if (cmd === 'sync') {
     if (pos[0] === 'trace') return runSyncTrace(cfg, opt);
     if (pos[0] === 'links') return runSyncLinks(cfg, opt);
