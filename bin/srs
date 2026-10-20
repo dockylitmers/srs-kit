@@ -5,6 +5,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const KIT_DIR = path.resolve(__dirname, '..');
 const TEMPLATE_DIR = path.join(KIT_DIR, 'templates');
@@ -39,10 +40,26 @@ const DEFAULT_CONFIG = {
   terms: { ko: [], en: [] },
   allowTerms: [],
   assets: { urlPrefix: '/srs-assets/', dir: null },
+  // 번역 version이 원문과 달라도 되는지. false면 다를 때 오류(판 단위로 한·영을 함께 올릴 때)
+  allowStaleTranslations: true,
+  // 판마다 다시 만드는 표(추적표, 구현 상태 등). 판을 올릴 때 예전 버전으로 남기지 않는다
+  generatedPages: [],
+  // 페이지 번호 규칙(STANDARD 4절): 제목 번호 = 개요 페이지 표 번호, 사이드바 번호 순서
+  numbering: { enabled: false, indexPage: 'index' },
+  // "title"이면 링크 글자가 가리키는 페이지 제목과 같은지 본다(srs sync links로 맞춘다)
+  linkText: null,
+  // 링크 글자 검사에서 그대로 두는 글자(페이지가 아니라 화면 이름을 가리키는 링크 등)
+  linkTextAllow: [],
+  // srs sync trace가 추적표 요약 칸에 넣는 글자 수
+  traceSummaryLength: 80,
 };
 
 const STATUSES = ['draft', 'in-review', 'confirmed'];
 const PROPOSAL_MARK = { ko: '(제안)', en: '(proposed)' };
+// 고객사가 직접 만들거나 줘야 하는 것(STANDARD 2절)
+const PREPARE_MARK = { ko: '(준비 필요)', en: '(client to prepare)' };
+// 사이트 배지는 정확한 글자에만 붙는다. 이렇게 쓰면 틀린 것으로 본다.
+const MARKER_MISSPELLING = /\((?:준비\s*필요|제안|proposed|client to prepare)\s*[:,：][^)]*\)|\(준비필요\)|\(\s+(?:제안|준비 필요|proposed|client to prepare)\s*\)|\((?:제안|준비 필요|proposed|client to prepare)\s+\)/gi;
 
 // 절 이름(한국어, 영어). 제목이 이 말로 시작하면 그 절로 본다.
 const SECTIONS = {
@@ -164,7 +181,7 @@ function escapeRe(s) {
 }
 
 function parseArgs(argv) {
-  const BOOL = new Set(['example', 'force', 'json', 'strict', 'help', 'verbose', 'all']);
+  const BOOL = new Set(['example', 'force', 'json', 'strict', 'help', 'verbose', 'all', 'edition', 'dry-run']);
   const pos = [];
   const opt = {};
   for (let i = 0; i < argv.length; i++) {
@@ -210,7 +227,7 @@ function shown(p) {
 function mergeConfig(base, user) {
   const out = { ...base };
   for (const [k, v] of Object.entries(user || {})) {
-    if (k === 'formDirs' || Array.isArray(v) || v === null || typeof v !== 'object') out[k] = v;
+    if (k === 'formDirs' || k === 'numbering' && typeof v === 'boolean' || Array.isArray(v) || v === null || typeof v !== 'object') out[k] = v;
     else out[k] = mergeConfig(base[k] || {}, v);
   }
   return out;
@@ -247,7 +264,45 @@ function loadConfig(opt) {
   cfg.ruleIdGlobal = new RegExp(`(?<![\\w-])${cfg.ruleIdPattern}(?![\\w-])`, 'g');
   cfg.sourceIdGlobal = new RegExp(`(?<![\\w-])${cfg.sourceIdPattern}(?![\\w-])`, 'g');
   cfg.langs = [cfg.primaryLanguage, ...cfg.translations];
+  if (typeof cfg.numbering === 'boolean') cfg.numbering = { enabled: cfg.numbering, indexPage: 'index' };
   return cfg;
+}
+
+function matchesList(slug, list) {
+  return (list || []).some((p) => (p.endsWith('/') ? slug.startsWith(p) : slug === p));
+}
+
+function isGenerated(slug, cfg) {
+  return matchesList(slug, cfg.generatedPages);
+}
+
+// ---------------------------------------------------------------- git
+
+function git(cfg, args, { allowFail = false } = {}) {
+  try {
+    return execFileSync('git', args, { cwd: cfg.root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+  } catch (e) {
+    if (allowFail) return null;
+    die(`git ${args.join(' ')} 실패: ${(e.stderr || e.message).toString().trim()}`);
+  }
+}
+
+function checkBaseRef(cfg, ref) {
+  if (git(cfg, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { allowFail: true }) === null) die(`기준 커밋을 찾을 수 없습니다: ${ref}`);
+}
+
+// 기준 커밋의 파일 내용. 없으면 null
+function gitShow(cfg, ref, absFile) {
+  return git(cfg, ['show', `${ref}:./${toPosix(path.relative(cfg.root, absFile))}`], { allowFail: true });
+}
+
+// 기준 커밋 이후 바뀐(또는 새로 생긴) 문서 파일의 절대 경로
+function changedDocFiles(cfg, ref) {
+  const rel = toPosix(path.relative(cfg.root, cfg.docsAbs));
+  const out = new Set();
+  for (const line of git(cfg, ['diff', '--name-only', '--relative', ref, '--', rel]).split('\n')) if (line.trim()) out.add(path.resolve(cfg.root, line.trim()));
+  for (const line of git(cfg, ['ls-files', '--others', '--exclude-standard', '--', rel]).split('\n')) if (line.trim()) out.add(path.resolve(cfg.root, line.trim()));
+  return [...out].filter((f) => /\.mdx?$/.test(f));
 }
 
 // ---------------------------------------------------------------- 페이지 읽기
@@ -481,6 +536,29 @@ function countProposals(page, lang) {
   return count;
 }
 
+// 개발 근거 앞 본문의 표시 개수(확인 요청 절 포함)
+function countMarker(page, mark) {
+  let count = 0;
+  const m = mark.toLowerCase();
+  for (const l of page.lines) {
+    if (l.inFence || l.n >= page.devNotesFrom) continue;
+    count += l.text.toLowerCase().split(m).length - 1;
+  }
+  return count;
+}
+
+function firstColumnIds(page, section, re) {
+  const ids = [];
+  for (const t of page.tables) {
+    if (t.section !== section) continue;
+    for (const r of t.rows) {
+      const id = (r.cells[0] || '').trim();
+      if (re.test(id)) ids.push(id);
+    }
+  }
+  return ids;
+}
+
 function pageVersion(page, cfg) {
   return page.fm.version || cfg.legacyVersion || null;
 }
@@ -527,8 +605,29 @@ function runCheck(cfg, opt) {
       const tv = pageVersion(tr, cfg);
       if (!kv || !tv || !isDate(kv) || !isDate(tv)) continue;
       if (tv > kv) add('error', relRoot(tr.file), 1, 'translation-ahead', `${t} version(${tv})이 원문(${kv})보다 늦습니다. 번역 version은 옮긴 원문 버전이다`);
-      else if (tv < kv) add('warn', relRoot(tr.file), 1, 'translation-stale', `번역이 ${tv} 기준입니다. 원문은 ${kv}. 번역을 고친 뒤 srs bump ${p.slug} --lang ${t}`);
+      else if (tv < kv) add(cfg.allowStaleTranslations ? 'warn' : 'error', relRoot(tr.file), 1, 'translation-stale', `번역이 ${tv} 기준입니다. 원문은 ${kv}. 번역을 고친 뒤 srs bump ${p.slug} --lang ${t}`);
       if (tv < kv && !(koVersionsBySlug.get(p.slug) || new Set()).has(tv)) add('warn', relRoot(tr.file), 1, 'translation-unknown-version', `번역 version ${tv}에 해당하는 원문 버전(현재 또는 예전 버전)이 없습니다`);
+      // 짝 대조: 같은 버전이면 규칙 ID, 예시, 확인 요청 행, 표시 개수가 같아야 한다
+      if (tv !== kv || isInternal(p, cfg) || isGenerated(p.slug, cfg)) continue;
+      const trRel = relRoot(tr.file);
+      const ids = (pg) => extractRules(pg, cfg).map((r) => r.id);
+      const ki = ids(p);
+      const ti = ids(tr);
+      if (ki.join('|') !== ti.join('|')) {
+        const onlyK = ki.filter((x) => !ti.includes(x));
+        const onlyT = ti.filter((x) => !ki.includes(x));
+        add('error', trRel, 1, 'pair-rules', onlyK.length || onlyT.length ? `규칙 ID가 원문과 다릅니다. 원문에만: ${onlyK.join(', ') || '-'} / 번역에만: ${onlyT.join(', ') || '-'}` : '규칙 ID 순서가 원문과 다릅니다');
+      }
+      const exRe = /^E\d+$/;
+      if (firstColumnIds(p, 'examples', exRe).join('|') !== firstColumnIds(tr, 'examples', exRe).join('|')) add('error', trRel, 1, 'pair-examples', '예시 ID(E1, E2, …)가 원문과 다릅니다');
+      const qk = p.tables.filter((x) => x.section === 'questions').reduce((s, x) => s + x.rows.length, 0);
+      const qt = tr.tables.filter((x) => x.section === 'questions').reduce((s, x) => s + x.rows.length, 0);
+      if (qk !== qt) add('error', trRel, 1, 'pair-questions', `확인 요청 행 수가 원문(${qk})과 다릅니다(${qt})`);
+      for (const mark of [PROPOSAL_MARK, PREPARE_MARK]) {
+        const ck = countMarker(p, mark[cfg.primaryLanguage] || mark.ko);
+        const ct = countMarker(tr, mark[t] || mark.en);
+        if (ck !== ct) add('error', trRel, 1, 'pair-markers', `${mark[t] || mark.en} 개수(${ct})가 원문 ${mark[cfg.primaryLanguage] || mark.ko} 개수(${ck})와 다릅니다`);
+      }
     }
   }
   for (const p of pages) {
@@ -682,6 +781,13 @@ function runCheck(cfg, opt) {
         }
       }
       if (/○○|\{\{[A-Z_]+\}\}/.test(l.code)) add('warn', fileRel, l.n, 'placeholder', '템플릿 자리 표시가 남아 있습니다');
+      MARKER_MISSPELLING.lastIndex = 0;
+      for (const mm of l.text.matchAll(MARKER_MISSPELLING)) add('error', fileRel, l.n, 'marker-spelling', `"${mm[0].slice(0, 40)}": 표시는 ${PROPOSAL_MARK.ko} ${PREPARE_MARK.ko} ${PROPOSAL_MARK.en} ${PREPARE_MARK.en} 그대로 쓴다(값은 표시 뒤에)`);
+      // MDX는 { }를 코드로 읽는다. 컴포넌트 줄, import·export 줄 밖의 중괄호는 빌드를 깬다
+      if (!/^\s*(<[A-Za-z/]|import\s|export\s)/.test(l.code) && /\{\{[A-Z_]+\}\}/.test(l.code) === false) {
+        const bm = /(?<!\\)[{}]/.exec(l.text);
+        if (bm) add('error', fileRel, l.n, 'mdx-brace', `중괄호가 있습니다("${l.text.slice(Math.max(0, bm.index - 15), bm.index + 15).trim()}"). MDX가 코드로 읽어 페이지가 깨진다. \\{ \\} 또는 \`…\`로 쓴다`);
+      }
       if (customer(l)) {
         const im = IMPL_DETAIL.exec(l.code);
         if (im) capped('impl-detail', l.n, `고객사가 읽는 부분에 코드 경로가 있습니다("${im[1]}"). "개발 근거" 절로 옮긴다`, tallies['impl-detail']);
@@ -832,7 +938,120 @@ function runCheck(cfg, opt) {
     else if (date === cv && read(f) !== cur.text) add('warn', relRoot(cur.file), 1, 'edited-without-bump', `현재 버전(${cv})과 같은 날짜의 예전 버전과 내용이 다릅니다. 고치기 전에 srs bump를 하지 않은 것으로 보입니다`);
   }
 
+  // 10. 기준 커밋과 비교(--base): 버전을 올린 페이지는 versionNote가 바뀌고, 기준 커밋의 파일이 그대로 예전 버전에 있다
+  if (opt.base) {
+    checkBaseRef(cfg, opt.base);
+    for (const p of pages) {
+      const old = gitShow(cfg, opt.base, p.file);
+      if (old === null) continue;
+      const ofm = analyzeText(old).fm;
+      const ov = ofm.version || cfg.legacyVersion;
+      const nv = pageVersion(p, cfg);
+      const fileRel = relRoot(p.file);
+      if (!ov || !isDate(ov) || ov === nv) {
+        if (old !== p.text && ov === nv && !isGenerated(p.slug, cfg)) add('info', fileRel, 1, 'changed-same-version', `${opt.base} 뒤 내용이 바뀌었는데 version(${nv})이 같습니다. 개발 근거·번호·링크 글자만 바뀐 것이 아니면 버전을 올린다`);
+        continue;
+      }
+      if ((ofm.versionNote || '') === (p.fm.versionNote || '')) add('error', fileRel, 1, 'version-note-unchanged', `version이 ${ov} → ${nv}로 바뀌었는데 versionNote가 그대로입니다`);
+      if (isGenerated(p.slug, cfg)) continue;
+      const arc = path.join(cfg.versionsAbs, ov, path.relative(cfg.docsAbs, p.file));
+      if (!exists(arc)) add('error', fileRel, 1, 'archive-missing', `예전 버전이 없습니다: ${relRoot(arc)} (${opt.base}의 파일을 그대로 남긴다)`);
+      else if (read(arc) !== old) add('error', relRoot(arc), 1, 'archive-differs', `예전 버전이 ${opt.base}의 파일과 다릅니다`);
+    }
+  }
+
+  // 11. 페이지 번호(numbering.enabled)
+  const numRe = /^(\d+(?:\.\d+)*)\.?(?=\s|$)/;
+  const titleNum = (pg) => (pg && numRe.exec(pg.fm.title || '') || [])[1] || null;
+  const stripNum = (s) => (s || '').replace(numRe, '').trim();
+  if (cfg.numbering && cfg.numbering.enabled) {
+    const indexSlug = cfg.numbering.indexPage || 'index';
+    for (const lang of cfg.langs) {
+      const idx = get(indexSlug, lang);
+      if (!idx) continue;
+      const listedTop = new Set();
+      for (const t of idx.tables) {
+        for (const r of t.rows) {
+          const n = (r.cells[0] || '').trim();
+          const lm = /\[([^\]]+)\]\(([^)\s#]+)/.exec(r.raw.join('|'));
+          if (!/^\d+(\.\d+)*$/.test(n) || !lm) continue;
+          const target = resolveDocLink(idx, lm[2], cfg, get);
+          if (!target) continue;
+          listedTop.add(target.slug.split('/')[0]);
+          if (titleNum(target) !== n) add('warn', relRoot(idx.file), r.n, 'number-index', `표 번호 ${n}인데 페이지 제목은 "${target.fm.title}"입니다`);
+        }
+      }
+      if (lang !== cfg.primaryLanguage) continue;
+      for (const p of primary) {
+        const top = p.slug.split('/')[0];
+        if (p.slug === indexSlug || p.slug.includes('/') && !p.slug.endsWith('/index') || isInternal(p, cfg)) continue;
+        if (!listedTop.has(top)) add('warn', relRoot(p.file), 1, 'number-not-in-index', `개요 페이지 표에 이 페이지(번호)가 없습니다`);
+      }
+    }
+    for (const dir of new Set(primary.map((p) => path.dirname(p.file)))) {
+      const metaPath = path.join(dir, 'meta.json');
+      if (!exists(metaPath)) continue;
+      let meta;
+      try {
+        meta = JSON.parse(read(metaPath));
+      } catch {
+        continue;
+      }
+      const relDir = toPosix(path.relative(cfg.docsAbs, dir));
+      let prev = null;
+      for (const entry of meta.pages || []) {
+        if (typeof entry !== 'string' || entry.startsWith('---')) continue;
+        const slug = relDir ? `${relDir}/${entry}` : entry;
+        const n = titleNum(get(slug) || get(`${slug}/index`));
+        if (!n) continue;
+        const key = n.split('.').map(Number);
+        if (prev && compareNum(key, prev.key) < 0) add('warn', relRoot(metaPath), 1, 'number-order', `"${entry}"(${n})가 "${prev.entry}"(${prev.n}) 뒤에 있습니다. 사이드바는 번호 순서로`);
+        prev = { key, n, entry };
+      }
+    }
+  }
+
+  // 12. 링크 글자 = 대상 페이지 제목(linkText: "title")
+  if (cfg.linkText === 'title') {
+    const allowed = new Set(cfg.linkTextAllow || []);
+    for (const p of pages) {
+      const tally = new Map();
+      for (const l of p.lines) {
+        if (l.inFence) continue;
+        for (const m of l.text.matchAll(/(?<!!)\[([^\]]+)\]\(([^)\s]+)\)/g)) {
+          const target = resolveDocLink(p, m[2], cfg, get);
+          if (!target || !target.fm.title) continue;
+          const txt = m[1].trim();
+          if (allowed.has(txt) || cfg.ruleIdRe.test(txt) || /^[\d.]+$/.test(txt)) continue;
+          if (txt === target.fm.title || stripNum(txt) === stripNum(target.fm.title)) continue;
+          const k = `${txt} → ${target.fm.title}`;
+          if (!tally.has(k)) tally.set(k, { n: l.n, c: 0 });
+          tally.get(k).c++;
+        }
+      }
+      for (const [k, v] of tally) add('warn', relRoot(p.file), v.n, 'link-text', `링크 글자가 페이지 제목과 다릅니다: ${k}${v.c > 1 ? ` (${v.c}곳)` : ''}. srs sync links로 맞춘다`);
+    }
+  }
+
   return { findings, pages, primary, allRules, sourceIds };
+}
+
+function compareNum(a, b) {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? -1) - (b[i] ?? -1);
+    if (d) return d;
+  }
+  return 0;
+}
+
+// 상대 링크가 가리키는 같은 언어의 페이지(없으면 원문 페이지). 페이지가 아니면 null
+function resolveDocLink(page, href, cfg, get) {
+  if (/^(https?:|mailto:|tel:|#|\/)/.test(href)) return null;
+  const clean = decodeURI(href.split(/[?#]/)[0]).replace(/\.mdx?$/, '');
+  if (!clean) return null;
+  const slug = path.posix.normalize(path.posix.join(path.posix.dirname(page.slug), clean)).replace(/\/$/, '');
+  if (slug.startsWith('..')) return null;
+  return get(slug, page.lang) || get(`${slug}/index`, page.lang) || get(slug) || get(`${slug}/index`) || null;
 }
 
 function printCheck(result, cfg, opt) {
@@ -983,6 +1202,10 @@ function resolvePageArg(arg, cfg) {
 
 function snapshot(file, version, cfg, opt, log) {
   const rel = path.relative(cfg.docsAbs, file);
+  if (isGenerated(analyzePage(file, cfg).slug, cfg)) {
+    log.push(`  판마다 다시 만드는 표라 예전 버전을 남기지 않음: ${toPosix(rel)}`);
+    return true;
+  }
   const dest = path.join(cfg.versionsAbs, version, rel);
   const relDest = toPosix(path.relative(cfg.root, dest));
   if (exists(dest)) {
@@ -998,7 +1221,71 @@ function snapshot(file, version, cfg, opt, log) {
   return true;
 }
 
+// 판 단위로 올린다: 기준 커밋 뒤 바뀐 페이지를 모두 같은 날짜로, 한·영 함께.
+// 고친 뒤에 실행한다. 예전 버전에는 기준 커밋의 파일을 남긴다.
+function runEditionBump(cfg, opt) {
+  if (!opt.base) die('--edition에는 --base <기준 커밋>이 필요하다(판을 시작한 커밋. 예: origin/dev)');
+  checkBaseRef(cfg, opt.base);
+  const date = opt.date || today();
+  if (!isDate(date)) die(`--date 형식이 YYYY-MM-DD가 아닙니다: ${date}`);
+  if (!opt.note) die('--note "이번 판에서 바뀐 것 한 줄"이 필요하다');
+  const dry = Boolean(opt['dry-run']);
+  const slugs = new Set();
+  for (const f of changedDocFiles(cfg, opt.base)) {
+    if (!exists(f)) continue;
+    const pg = analyzePage(f, cfg);
+    slugs.add(pg.slug);
+  }
+  if (!slugs.size) {
+    process.stdout.write(`${opt.base} 뒤 바뀐 페이지가 없습니다\n`);
+    return;
+  }
+  const out = [];
+  const counts = { bumped: 0, archived: 0, same: 0 };
+  for (const slug of [...slugs].sort()) {
+    const { fileFor } = resolvePageArg(slug, cfg);
+    for (const lang of cfg.langs) {
+      const file = fileFor(lang);
+      if (!file) continue;
+      const rel = toPosix(path.relative(cfg.root, file));
+      const text = read(file);
+      const fm = analyzeText(text).fm;
+      if (fm.version === date) {
+        counts.same++;
+        out.push(`  = ${rel}: 이미 ${date}`);
+        continue;
+      }
+      const old = gitShow(cfg, opt.base, file);
+      const oldVersion = old === null ? null : analyzeText(old).fm.version || cfg.legacyVersion;
+      if (oldVersion && isDate(oldVersion) && oldVersion > date) die(`${rel}: 기준 커밋의 version(${oldVersion})이 새 판(${date})보다 늦다`);
+      if (old !== null && oldVersion && isDate(oldVersion) && oldVersion !== date && !isGenerated(slug, cfg)) {
+        const dest = path.join(cfg.versionsAbs, oldVersion, path.relative(cfg.docsAbs, file));
+        const relDest = toPosix(path.relative(cfg.root, dest));
+        if (exists(dest) && read(dest) !== old && !opt.force) die(`${relDest}가 이미 있고 ${opt.base}의 파일과 다르다. 예전 버전 파일은 고치지 않는다. 확인 후 --force`);
+        if (!dry && !(exists(dest) && read(dest) === old)) {
+          fs.mkdirSync(path.dirname(dest), { recursive: true });
+          fs.writeFileSync(dest, old);
+        }
+        counts.archived++;
+        out.push(`  예전 버전 저장: ${relDest}`);
+      }
+      const note = lang === cfg.primaryLanguage ? opt.note : opt[`note-${lang}`] || opt.note;
+      const updates = { version: yamlString(date), versionNote: yamlString(note) };
+      if (fm.status === 'confirmed') updates.status = 'draft';
+      if (!dry) fs.writeFileSync(file, setFrontmatter(text, updates));
+      counts.bumped++;
+      out.push(`  ${rel}: version ${fm.version || '(없음)'} → ${date}${updates.status ? ', status confirmed → draft' : ''}`);
+    }
+  }
+  out.push('');
+  out.push(`${dry ? '(미리 보기) ' : ''}판 ${date}: 페이지 ${slugs.size}개, 파일 ${counts.bumped}개 올림, 예전 버전 ${counts.archived}개 저장${counts.same ? `, 이미 ${date} ${counts.same}개` : ''}`);
+  if (cfg.translations.some((t) => !opt[`note-${t}`])) out.push(`번역 versionNote는 --note를 그대로 썼다. 번역 문장으로 고친다(--note-${cfg.translations[0]}로 줄 수 있다)`);
+  out.push(`다음: srs check --base ${opt.base}`);
+  process.stdout.write(`${out.join('\n')}\n`);
+}
+
 function runBump(cfg, pos, opt) {
+  if (opt.edition) return runEditionBump(cfg, opt);
   const { slug, lang: fileLang, fileFor } = resolvePageArg(pos[0], cfg);
   const lang = opt.lang || fileLang || cfg.primaryLanguage;
   if (lang !== 'all' && !cfg.langs.includes(lang)) die(`--lang은 ${cfg.langs.join(', ')}, all 중 하나다`);
@@ -1074,6 +1361,163 @@ function runBump(cfg, pos, opt) {
   process.stdout.write(`${slug}\n${log.join('\n')}\n`);
 }
 
+// ---------------------------------------------------------------- sync
+
+const plainText = (s) => (s || '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/`/g, '').replace(/\\/g, '').replace(/\s+/g, ' ').trim();
+const cellOut = (s) => String(s).replace(/\|/g, '\\|');
+
+function writePage(page, raw, dry) {
+  if (dry) return;
+  const nl = page.text.includes('\r\n') ? '\r\n' : '\n';
+  fs.writeFileSync(page.file, raw.join(nl));
+}
+
+// 추적표의 규칙 행을 페이지의 규칙에 맞춘다: 빠진 행을 넣고, 출처·요약 칸을 고친다. 다른 칸은 두고, 없어진 규칙 행은 알리기만 한다.
+function runSyncTrace(cfg, opt) {
+  const { pages, get } = loadPages(cfg);
+  const dry = Boolean(opt['dry-run']);
+  const limit = Number(cfg.traceSummaryLength) || 80;
+  const cut = (t) => {
+    const s = plainText(t);
+    return s.length > limit ? `${s.slice(0, limit).trimEnd()}…` : s;
+  };
+  const out = [];
+  for (const lang of cfg.langs) {
+    const tp = get(cfg.pages.traceability, lang);
+    if (!tp) continue;
+    const table = tp.tables.find((t) => /ID/i.test(t.header[0] || ''));
+    if (!table) {
+      out.push(`${toPosix(path.relative(cfg.root, tp.file))}: 첫 열이 ID인 표가 없습니다`);
+      continue;
+    }
+    const pageCol = columnIndex(table, /^(페이지|Page)$/i);
+    const srcCol = columnIndex(table, /^(출처|근거|Sources?)$/i);
+    const sumCol = columnIndex(table, /^(규칙|요약|규칙 요약|Rule|Rule summary|Summary)$/i);
+    const raw = [...tp.raw];
+    const rowIndex = new Map(); // id -> raw 줄 번호(0부터)
+    for (const r of table.rows) {
+      const id = (r.cells[0] || '').trim();
+      if (cfg.ruleIdRe.test(id)) rowIndex.set(id, r.n - 1);
+    }
+    let lastRow = table.rows.length ? table.rows[table.rows.length - 1].n - 1 : table.n; // 구분 줄 다음에 넣는다
+    const defined = new Set();
+    const changes = [];
+    const langPages = pages.filter((p) => p.lang === lang && !isInternal(p, cfg) && p.slug !== cfg.pages.traceability).sort((a, b) => a.slug.localeCompare(b.slug));
+    for (const p of langPages) {
+      const rules = extractRules(p, cfg);
+      if (!rules.length) continue;
+      let rel = path.posix.relative(path.posix.dirname(cfg.pages.traceability), p.slug.replace(/\/index$/, ''));
+      if (!rel.startsWith('.')) rel = `./${rel}`;
+      const pageLink = `[${p.fm.title || p.slug}](${rel})`;
+      let anchor = null;
+      for (const r of rules) {
+        defined.add(r.id);
+        if (rowIndex.has(r.id)) {
+          const i = rowIndex.get(r.id);
+          anchor = i;
+          const cells = splitCells(raw[i]);
+          while (cells.length < table.header.length) cells.push('');
+          let touched = false;
+          if (srcCol >= 0 && r.sources !== null && cells[srcCol] !== r.sources.trim()) {
+            cells[srcCol] = r.sources.trim();
+            touched = true;
+          }
+          if (sumCol >= 0) {
+            const short = plainText(cells[sumCol]).replace(/…$/, '').trim();
+            if (!short || !plainText(r.text).startsWith(short)) {
+              cells[sumCol] = cut(r.text);
+              touched = true;
+            }
+          }
+          if (pageCol >= 0 && !cells[pageCol].trim()) {
+            cells[pageCol] = pageLink;
+            touched = true;
+          }
+          if (touched) {
+            raw[i] = `| ${cells.map(cellOut).join(' | ')} |`;
+            changes.push(`고침 ${r.id}`);
+          }
+        } else {
+          const cells = table.header.map(() => '');
+          cells[0] = r.id;
+          if (pageCol >= 0) cells[pageCol] = pageLink;
+          if (srcCol >= 0 && r.sources !== null) cells[srcCol] = r.sources.trim();
+          if (sumCol >= 0) cells[sumCol] = cut(r.text);
+          const at = (anchor ?? lastRow) + 1;
+          raw.splice(at, 0, `| ${cells.map(cellOut).join(' | ')} |`);
+          for (const [id, i] of rowIndex) if (i >= at) rowIndex.set(id, i + 1);
+          if (lastRow >= at - 1) lastRow++;
+          rowIndex.set(r.id, at);
+          anchor = at;
+          changes.push(`넣음 ${r.id}`);
+        }
+      }
+    }
+    const rel = toPosix(path.relative(cfg.root, tp.file));
+    for (const id of rowIndex.keys()) if (!defined.has(id)) out.push(`${rel}: ${id} 행의 규칙이 어느 페이지에도 없습니다(지우지 않음)`);
+    if (changes.length) writePage(tp, raw, dry);
+    const ins = changes.filter((c) => c.startsWith('넣음')).length;
+    out.push(`${rel}: ${changes.length ? `넣음 ${ins}, 고침 ${changes.length - ins}` : '바꿀 것 없음'}${dry && changes.length ? ' (미리 보기)' : ''}`);
+    if (opt.verbose) for (const c of changes) out.push(`  ${c}`);
+  }
+  if (!out.length) out.push(`추적표 페이지(${cfg.pages.traceability})가 없습니다`);
+  process.stdout.write(`${out.join('\n')}\n`);
+}
+
+// 한국어 조사를 앞 글자의 받침에 맞춘다
+function fixParticle(rest, word) {
+  const last = word.trim().slice(-1);
+  const code = last.charCodeAt(0);
+  if (!(code >= 0xac00 && code <= 0xd7a3)) return null;
+  const batchim = (code - 0xac00) % 28;
+  const m = /^(으로|로|을|를|이|가|은|는|과|와)(?![가-힣])/.exec(rest);
+  if (!m) return null;
+  const pairs = { 을: ['을', '를'], 를: ['을', '를'], 이: ['이', '가'], 가: ['이', '가'], 은: ['은', '는'], 는: ['은', '는'], 과: ['과', '와'], 와: ['과', '와'] };
+  let want;
+  if (m[1] === '으로' || m[1] === '로') want = batchim === 0 || batchim === 8 ? '로' : '으로';
+  else want = batchim ? pairs[m[1]][0] : pairs[m[1]][1];
+  return want === m[1] ? null : { from: m[1], to: want };
+}
+
+// 링크 글자를 가리키는 페이지 제목으로 바꾼다(번호 없이 같은 이름이면 그대로 둔다)
+function runSyncLinks(cfg, opt) {
+  const { pages, get } = loadPages(cfg);
+  const dry = Boolean(opt['dry-run']);
+  const allowed = new Set(cfg.linkTextAllow || []);
+  const stripNum = (s) => (s || '').replace(/^(\d+(?:\.\d+)*)\.?(?=\s|$)/, '').trim();
+  const out = [];
+  let total = 0;
+  for (const p of pages) {
+    const raw = [...p.raw];
+    let n = 0;
+    for (const l of p.lines) {
+      if (l.inFence) continue;
+      const i = l.n - 1;
+      raw[i] = raw[i].replace(/(?<!!)\[([^\]\n]+)\]\(([^)\s]+)\)([가-힣]{0,2})/g, (all, txt, href, after) => {
+        const target = resolveDocLink(p, href, cfg, get);
+        if (!target || !target.fm.title) return all;
+        const t = txt.trim();
+        const title = target.fm.title;
+        if (allowed.has(t) || cfg.ruleIdRe.test(t) || /^[\d.]+$/.test(t) || t === title || stripNum(t) === stripNum(title)) return all;
+        n++;
+        let rest = after;
+        if (p.lang === 'ko') {
+          const fix = fixParticle(after, title);
+          if (fix) rest = fix.to + after.slice(fix.from.length);
+        }
+        return `[${title}](${href})${rest}`;
+      });
+    }
+    if (n) {
+      writePage(p, raw, dry);
+      total += n;
+      out.push(`  ${toPosix(path.relative(cfg.root, p.file))}: ${n}곳`);
+    }
+  }
+  out.push(`링크 글자 ${total}곳을 페이지 제목으로 바꿈${dry && total ? ' (미리 보기)' : ''}. 화면 이름 같은 링크는 srs.config.json linkTextAllow에 넣으면 그대로 둔다`);
+  process.stdout.write(`${out.join('\n')}\n`);
+}
+
 // ---------------------------------------------------------------- 템플릿 복사
 
 function fillPlaceholders(text, vars) {
@@ -1136,6 +1580,7 @@ function runInit(pos, opt) {
     log.created.push('srs.config.json');
   } else log.skipped.push('srs.config.json');
   if (opt.web) {
+    if (!exists(WEB_TEMPLATE_DIR)) die(`문서 사이트 코드가 이 키트에 없습니다(${shown(WEB_TEMPLATE_DIR)}). --web 없이 실행한다`);
     const webAbs = path.resolve(root, opt.web);
     if (!exists(webAbs)) die(`앱 폴더가 없습니다: ${webAbs}`);
     const webVars = {
@@ -1208,10 +1653,18 @@ const HELP = `srs — SRS 키트 도구 (기준: STANDARD.md, 순서: PROCESS.md
       고치기 전에 실행한다. 지금 파일을 docs/srs-versions/<지금 version>/에 남기고 version을 올린다.
       --lang en  번역을 마친 뒤 영어 version을 원문 버전에 맞춘다
       --lang all 두 언어를 함께 올린다
-  srs check [--json] [--strict] [--verbose] [--limit N]
+  srs bump --edition --base <기준 커밋> --note "이번 판" [--note-en "..."] [--date YYYY-MM-DD] [--dry-run]
+      판 단위로 올린다. 고친 뒤에 실행한다. 기준 커밋 뒤 바뀐 페이지를 모두 같은 날짜로 한·영 함께 올리고,
+      기준 커밋의 파일을 예전 버전으로 남긴다(generatedPages는 남기지 않음).
+  srs check [--base <기준 커밋>] [--json] [--strict] [--verbose] [--limit N]
       모든 페이지를 검사한다. 오류가 있으면 종료 코드 1(--strict면 경고도 1).
+      --base  버전을 올린 페이지의 versionNote와 예전 버전 파일을 기준 커밋과 대조한다
   srs status [--all]
       기능·정책 페이지의 버전, 번역, 상태, 확인 현황을 표로 출력한다(확인 기록 페이지에 붙여 넣는다).
+  srs sync trace [--dry-run] [--verbose]
+      추적표에 빠진 규칙 행을 넣고 출처·요약 칸을 페이지에 맞춘다. 다른 칸은 그대로 둔다.
+  srs sync links [--dry-run]
+      링크 글자를 가리키는 페이지 제목으로 바꾼다(한국어 조사도 맞춘다).
 
 공통 옵션
   --root <폴더>     저장소 루트(기본: srs.config.json이 있는 가장 가까운 상위 폴더, 없으면 현재 폴더)
@@ -1235,6 +1688,11 @@ function main() {
   if (cmd === 'status') return runStatus(cfg, opt);
   if (cmd === 'bump') return runBump(cfg, pos, opt);
   if (cmd === 'new') return runNew(cfg, pos, opt);
+  if (cmd === 'sync') {
+    if (pos[0] === 'trace') return runSyncTrace(cfg, opt);
+    if (pos[0] === 'links') return runSyncLinks(cfg, opt);
+    die('srs sync trace | srs sync links');
+  }
   die(`알 수 없는 명령: ${cmd} (srs help)`);
 }
 

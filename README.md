@@ -4,6 +4,10 @@
 
 SRS는 **고객사와 합의한 범위 기준선**이다. 고객사가 기능별로 확인한 페이지 버전이 기준이 되고, QA에서는 "확인된 SRS와 다르면 버그, 없으면 변경 요청"으로 판정한다.
 
+키트는 세 부분이다. 작성 기준과 운영 순서(문서), `srs` 명령 도구, 그리고 Claude Code 스킬(`skill/SKILL.md`)이다. 스킬을 설치하면 Claude가 이 기준과 도구로 SRS를 세팅·작성·검수한다.
+
+버전: 0.2 (바뀐 것은 [STANDARD.md](STANDARD.md) 맨 끝 "이 기준의 변경 이력").
+
 ## 들어 있는 것
 
 | 경로 | 내용 |
@@ -14,41 +18,59 @@ SRS는 **고객사와 합의한 범위 기준선**이다. 고객사가 기능별
 | [templates/pages/](templates/pages/) | 기능·정책 페이지 틀(`srs new`가 쓴다) |
 | [templates/examples/](templates/examples/) | 예시: 기능 페이지 "주문 취소와 환불", 그 출처 목록·추적표·용어집 |
 | [templates/messages/](templates/messages/) | 고객사에 올리는 글: 확인 요청, 변경 요청 답변 |
-| [templates/briefs/](templates/briefs/) | 작업 세션 지시서: 내용 작성, 구현 대조, 문서 사이트 |
-| [web/](web/README.md) | 문서 사이트 코드(Next.js + fumadocs): 언어 전환, 페이지별 버전 드롭다운 |
-| [bin/srs](bin/srs) | 명령줄 도구: `init`, `new`, `bump`, `check`, `status` |
+| [templates/briefs/](templates/briefs/) | 작업 세션 지시서: 내용 작성, 구현 대조, 사전 답변, 독립 검토, 번역, 문서 사이트 |
+| `web/` | 문서 사이트 코드(Next.js + fumadocs). 공개 저장소에는 아직 없다 |
+| [bin/srs](bin/srs) | 명령줄 도구: `init`, `new`, `bump`, `check`, `status`, `sync` |
 | [skill/SKILL.md](skill/SKILL.md) | Claude Code 스킬 원본 |
+
+## 설치
+
+Node.js 18 이상과 git만 있으면 된다(외부 패키지 없음).
+
+```bash
+git clone https://github.com/dockylitmers/srs-kit.git ~/srs-kit
+echo 'export SRS_KIT=~/srs-kit' >> ~/.zshrc            # 셸 설정에
+ln -s ~/srs-kit/skill ~/.claude/skills/srs              # Claude Code 스킬
+# 명령을 짧게 쓰려면: ln -s ~/srs-kit/bin/srs /usr/local/bin/srs
+```
+
+갱신은 `git -C ~/srs-kit pull`. 스킬이 링크라서 따로 다시 설치하지 않는다.
 
 ## 빠른 시작
 
-Node.js 18 이상만 있으면 된다(외부 패키지 없음).
-
 ```bash
 # 1. 새 프로젝트에 뼈대를 만든다(있는 파일은 덮어쓰지 않는다)
-~/Workspace/srs-kit/bin/srs init ~/work/my-project --name "내 프로젝트"
+srs init ~/work/my-project --name "내 프로젝트"
 #    예시 페이지까지: --example / 문서 사이트 코드까지: --web apps/web
 
 # 2. 기능 페이지를 만든다
 cd ~/work/my-project
-~/Workspace/srs-kit/bin/srs new feature order-cancellation --title "주문 취소와 환불" --code CAN
+srs new feature order-cancellation --title "주문 취소와 환불" --code CAN
 
-# 3. 페이지를 고치기 전에 버전을 올린다(지금 내용은 docs/srs-versions/<지금 version>/에 남는다)
-~/Workspace/srs-kit/bin/srs bump features/order-cancellation --note "취소 기한 변경"
+# 3. 페이지 하나를 고칠 때: 고치기 전에 버전을 올린다(지금 내용은 docs/srs-versions/<지금 version>/에 남는다)
+srs bump features/order-cancellation --note "취소 기한 변경"
 
-# 4. 검사하고 현황을 본다
-~/Workspace/srs-kit/bin/srs check
-~/Workspace/srs-kit/bin/srs status
+# 3'. 여러 페이지를 판으로 낼 때: 기준 커밋에서 시작해 다 고친 뒤 한 번에 올린다
+srs bump --edition --base origin/main --note "10월 3주 결정 반영" --note-en "Decisions of week 3 of October"
+
+# 4. 추적표를 맞추고, 검사하고, 현황을 본다
+srs sync trace
+srs check --base origin/main
+srs status
 ```
 
 ## 명령
 
 | 명령 | 하는 일 |
 | --- | --- |
-| `srs init <저장소> [--name] [--date] [--example] [--web <앱 폴더>] [--force]` | `docs/srs` 뼈대와 `srs.config.json`을 만든다. `--web`은 문서 사이트 코드를 앱 폴더에 복사한다. 있는 파일은 건너뛴다 |
+| `srs init <저장소> [--name] [--date] [--example] [--web <앱 폴더>] [--force]` | `docs/srs` 뼈대와 `srs.config.json`을 만든다. `--web`은 문서 사이트 코드(`web/`이 있을 때)를 앱 폴더에 복사한다. 있는 파일은 건너뛴다 |
 | `srs new <feature\|policy> <slug> --title --code [--description] [--en-title]` | 기능·정책 페이지를 한국어·영어로 만들고 `meta.json`에 넣는다. 같은 `code`가 있으면 멈춘다 |
 | `srs bump <페이지> [--note] [--date] [--lang ko\|en\|all] [--from]` | 한국어 파일을 지금 version 폴더에, 영어 파일을 영어 version 폴더에 남기고(이미 같은 내용이 있으면 건너뜀) 한국어 version을 올린다. 확인됨 페이지는 `draft`로 돌린다. `--lang en`은 번역을 마친 뒤 영어 version을 한국어 버전에 맞춘다. `--from`은 version이 없는 기존 페이지의 지금 날짜 |
-| `srs check [--json] [--strict] [--verbose] [--limit N]` | 검사. 오류가 있으면 종료 코드 1(`--strict`면 경고도 1) |
+| `srs bump --edition --base <커밋> --note [--note-en] [--date] [--dry-run]` | 판 단위로 올린다. 고친 **뒤에** 실행한다. 기준 커밋 뒤 바뀐 페이지를 모두 같은 날짜로 한·영 함께 올리고, 기준 커밋의 파일을 예전 버전으로 남긴다(`generatedPages`는 남기지 않음). 확인됨 페이지는 `draft`로 |
+| `srs check [--base <커밋>] [--json] [--strict] [--verbose] [--limit N]` | 검사. 오류가 있으면 종료 코드 1(`--strict`면 경고도 1). `--base`를 주면 기준 커밋과 대조하는 검사를 더한다 |
 | `srs status [--all]` | 기능·정책 페이지의 버전, 번역, 상태, `(제안)` 수, 마지막 확인 버전, 규칙 수를 마크다운 표로 출력한다(`baseline/confirmations`에 붙여 넣는다) |
+| `srs sync trace [--dry-run] [--verbose]` | 추적표에 빠진 규칙 행을 넣고 출처·요약 칸을 페이지에 맞춘다. 다른 칸(구현 상태, QA 결과)은 그대로 두고, 없어진 규칙 행은 알리기만 한다 |
+| `srs sync links [--dry-run]` | 링크 글자를 가리키는 페이지 제목으로 바꾸고 한국어 조사(을/를, 이/가, 은/는, 과/와, 으로/로)를 맞춘다 |
 
 공통 옵션: `--root <저장소>`(기본: `srs.config.json`이 있는 가장 가까운 상위 폴더), `--config <파일>`.
 
@@ -56,9 +78,12 @@ cd ~/work/my-project
 
 | 분류 | 검사 |
 | --- | --- |
-| 버전 | `version` 있음·형식, 영어 `version`이 한국어보다 늦지 않음(같으면 최신, 이르면 "번역 뒤처짐"), 예전 버전 폴더 이름·날짜, 현재와 같은 날짜의 예전 파일이 현재와 다름(bump 없이 고침) |
+| 버전 | `version` 있음·형식, 영어 `version`이 한국어보다 늦지 않음(같으면 최신, 이르면 "번역 뒤처짐", `allowStaleTranslations: false`면 오류), 예전 버전 폴더 이름·날짜, 현재와 같은 날짜의 예전 파일이 현재와 다름(bump 없이 고침) |
+| 한·영 짝 | 같은 버전이면 규칙 ID와 순서, 예시 ID, 확인 요청 행 수, `(제안)`·`(준비 필요)` 개수가 같음 |
+| 기준 커밋(`--base`) | 버전을 올린 페이지의 versionNote가 바뀜, 예전 버전 파일이 기준 커밋의 파일과 같음, 내용은 바뀌었는데 버전이 같은 페이지(참고) |
 | 파일 구조 | 영어 짝, `meta.json`의 페이지 목록, `meta.en.json`, 최상위 예약어 `en`·`v`, 깨진 상대 링크, 문서 사이 절대 링크 |
-| 본문 | `# 제목`·"최종 수정일" 줄, 쓰지 않는 말(STANDARD 5절, 설정, 용어집의 "쓰지 않는 말"), 템플릿 자리 표시, 비밀값으로 보이는 문자열 |
+| 본문 | `# 제목`·"최종 수정일" 줄, 쓰지 않는 말(STANDARD 5절, 설정, 용어집의 "쓰지 않는 말"), 템플릿 자리 표시, 비밀값으로 보이는 문자열, 표시 철자(`(제안: …)`, `(준비필요)`), MDX를 깨는 중괄호 |
+| 번호·링크 | `numbering`이 켜져 있으면 개요 페이지 표 번호 = 제목 번호, 최상위 페이지가 표에 있음, 사이드바 번호 순서. `linkText: "title"`이면 링크 글자 = 대상 페이지 제목 |
 | 고객사가 읽는 부분 | 코드 경로, 코드 이름, 이슈 번호, 진행 상태 열, 쉬운 말(문자, 앱 푸시, 이메일) |
 | 규칙 | ID 중복, 페이지 `code`로 시작, 출처 열·출처 ID가 출처 목록에 있음, 숫자 규칙의 예시, "~하면"의 "아니면", 추적표와 ID 일치 |
 | 기능·정책 양식 | 필수 절, `status`·`code`, 확인됨 페이지에 `(제안)` 없음, 현재 버전의 확인 기록 |
@@ -83,15 +108,13 @@ cd ~/work/my-project
 | `docBasePaths` | `["/docs/srs"]` | 문서 사이트 주소(이 주소로 시작하는 절대 링크를 알린다) |
 | `terms` / `allowTerms` | `{ko: [], en: []}` / `[]` | 프로젝트에서 더 금지할 말, 허용할 말 |
 | `assets` | `urlPrefix: /srs-assets/`, `dir: null` | `dir`을 주면 그 주소로 시작하는 이미지 파일이 있는지 본다 |
+| `allowStaleTranslations` | `true` | `false`면 번역 version이 원문과 다를 때 오류(판마다 한·영을 함께 올리는 팀) |
+| `generatedPages` | `[]` | 판마다 다시 만드는 표(추적표, 구현 상태, 화면 목록 등). 예전 버전으로 남기지 않는다 |
+| `numbering` | `false` | `true` 또는 `{ "enabled": true, "indexPage": "index" }`. 페이지 번호 검사를 켠다(STANDARD 4절) |
+| `linkText` | `null`(템플릿은 `"title"`) | `"title"`이면 링크 글자를 대상 페이지 제목과 대조한다 |
+| `linkTextAllow` | `[]` | 링크 글자 검사·`sync links`에서 그대로 두는 글자(화면 이름처럼 페이지가 아닌 것을 가리키는 링크) |
+| `traceSummaryLength` | `80` | `sync trace`가 추적표 요약 칸에 넣는 글자 수 |
 
-## 스킬 설치
-
-설치는 각자 한다(키트는 설치하지 않는다).
-
-```bash
-ln -s ~/Workspace/srs-kit/skill ~/.claude/skills/srs
-# 키트를 다른 곳에 두었으면 셸 설정에: export SRS_KIT=<키트 경로>
-```
 
 ## 기존 SRS가 있는 프로젝트
 

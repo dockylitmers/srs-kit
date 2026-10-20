@@ -5,7 +5,11 @@ version: "2026-10-08"
 versionNote: "Cancellation deadline now counts from the payment date; boundary examples added"
 ---
 
-{/* srs-kit example page. The values are made up for illustration, and the source IDs (SRC-…) only have meaning inside this example. */}
+{/* srs-kit example page. The values are made up for illustration, and the source IDs (SRC-…) only have meaning inside this example.
+  Rows that show who decides (STANDARD.md section 3.1):
+  - The points period in CAN-05 is money, so the client decides. No source gives a value, so it is marked (proposed) with question 1.
+  - The notification channels in CAN-08 are an internal decision (SRC-007, rank 5), so they carry no marker. The contact details in the email are client operations, so they are marked (client to prepare) with question 3.
+  - Question 2 has been answered and shows "Settled". */}
 
 ## Purpose
 
@@ -37,7 +41,7 @@ Customers cancel a paid order themselves from the order detail screen in the app
 | CAN-05 | All points used are returned at cancellation. If the points have expired, they can be used until 23:59 on day (proposed) 30, counting the return date as day 1. Otherwise they keep their original expiry. | SRC-005 |
 | CAN-06 | After the cancellation completes, the completion screen shows "카드사에 따라 영업일 3~7일 안에 환불됩니다" (refunds take 3 to 7 business days depending on the card issuer). | SRC-004 |
 | CAN-07 | If the admin has the `운영자` (operator) or `최고 관리자` (super admin) role, they can refund. Otherwise the refund button is hidden. A refund records a reason chosen from a list, who processed it, and the time. | SRC-006 |
-| CAN-08 | When a cancellation or refund completes, the customer is notified by app push and email. If the customer has turned off app push, only email is sent. Otherwise both are sent. | SRC-007 |
+| CAN-08 | When a cancellation or refund completes, the customer is notified by app push and email. If the customer has turned off app push, only email is sent. Otherwise both are sent. The email footer shows the customer support contact and hours (client to prepare). | SRC-007 |
 
 ### Status transitions
 
@@ -76,6 +80,8 @@ Customers cancel a paid order themselves from the order detail screen in the app
 | No. | Question | Proposed answer | Basis | Answer |
 | --- | --- | --- | --- | --- |
 | 1 | When expired points are returned by a cancellation, how many days should the customer have to use them? | 30 days from the return date | Matches the "30 days before expiry" notice in the points expiry policy (SRC-005) | Waiting for the answer |
+| 2 | Should a cancellation fee be charged when an order is cancelled? | No fee | The cancellation rules request (SRC-002) does not mention a fee | Settled: no fee (SRC-009) |
+| 3 | Please send the customer support contact and hours to show in cancellation and refund emails. | - | This is client operations information, so the client provides it | Waiting for the answer |
 
 ## Confirmation record
 
@@ -89,4 +95,4 @@ Customers cancel a paid order themselves from the order detail screen in the app
 
 - Order statuses and transitions: the order status document in the technical spec
 - Card payment cancellation: the payment provider's cancellation API document
-- Admin roles: the [permissions policy](../policies) page and the admin role document in the technical spec
+- Admin roles: the permissions page under [Policies](../policies) and the admin role document in the technical spec

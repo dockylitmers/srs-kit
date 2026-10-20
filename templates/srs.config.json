@@ -3,7 +3,9 @@
   "docsDir": "docs/srs",
   "versionsDir": "docs/srs-versions",
   "primaryLanguage": "ko",
-  "translations": ["en"],
+  "translations": [
+    "en"
+  ],
   "requireTranslations": true,
   "legacyVersion": null,
   "pages": {
@@ -11,10 +13,28 @@
     "traceability": "baseline/traceability",
     "glossary": "glossary"
   },
-  "internalPages": ["baseline/"],
-  "formDirs": { "features": "feature", "policies": "policy" },
-  "docBasePaths": ["/docs/srs"],
-  "terms": { "ko": [], "en": [] },
+  "internalPages": [
+    "baseline/"
+  ],
+  "formDirs": {
+    "features": "feature",
+    "policies": "policy"
+  },
+  "docBasePaths": [
+    "/docs/srs"
+  ],
+  "terms": {
+    "ko": [],
+    "en": []
+  },
   "allowTerms": [],
-  "assets": { "urlPrefix": "/srs-assets/", "dir": null }
+  "assets": {
+    "urlPrefix": "/srs-assets/",
+    "dir": null
+  },
+  "allowStaleTranslations": true,
+  "generatedPages": [],
+  "numbering": false,
+  "linkText": "title",
+  "linkTextAllow": []
 }
