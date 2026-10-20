@@ -3,7 +3,7 @@
 외주(수탁) 프로젝트에서 고객사와 합의하는 SRS(소프트웨어 요구사항 명세서)를 쓰고 관리하는 기준이다.
 세팅·운영 순서는 [PROCESS.md](PROCESS.md), 파일 뼈대는 [`templates/`](templates/), 검사 도구는 [`bin/srs`](bin/srs)를 쓴다.
 
-기준 버전: 0.3. 바뀐 것은 맨 끝 "이 기준의 변경 이력"에 있다.
+기준 버전: 0.4. 바뀐 것은 맨 끝 "이 기준의 변경 이력"에 있다.
 
 ## 1. 목적
 
@@ -226,6 +226,7 @@ code: CAN                    # 규칙 ID 접두어, 영문 대문자 2~5자
 | 목적 · 포함 · 이번 출시에 없는 것 | Purpose · In scope · Not in this release |
 | 규칙 · 예시 · 화면 · 적용 기능 | Rules · Examples · Screens · Applies to |
 | 확인 요청 · 확인 기록 · 개발 근거 | Open questions · Confirmation record · Developer notes |
+| 구현됨 · 다르게 구현됨 · 미구현 · 범위에서 빠짐 (구현 상태) | Implemented · Implemented differently · Not implemented · Out of scope |
 
 ## 8. 버전
 
@@ -355,6 +356,7 @@ code: CAN                    # 규칙 ID 접두어, 영문 대문자 2~5자
 
 | 버전 | 바뀐 것 |
 | --- | --- |
+| 0.4 | 구현 상태 이름 네 가지와 고정 번역(7절). 구현 대조 보고서를 옮기는 `srs sync impl`, 기존 SRS의 오류·경고 기준선(`srs check --save-baseline`·`--baseline`), 안내 페이지(`guidePages`)는 사이드바에서 빼도 됨(PROCESS 3단계, 기존 SRS 도입). 문서 사이트 요구사항 [SITE.md](SITE.md): 사이트 코드 없이 만들 때의 기준, 예전 버전은 요청 시 렌더링 |
 | 0.3 | 온보딩: 근거 문서(링크, 파일, 폴더, 메모)를 받아 출처 목록에 "읽기 전"으로 넣는다(`srs onboard`, `srs source add`, PROCESS 0·1단계). 근거 파일 지문과 바뀜 알림(`srs source status`, `refresh`), 사본은 git에 올라가지 않는 보관함에 날짜별로(PROCESS 6절) |
 | 0.2 | 고객사에는 고객사가 정할 것만 묻는다(3.1절). 내부 결정은 `(제안)` 없이 쓴다. `(준비 필요)` 표시(3.2절). 확인 요청 번호 규칙(6절). 판 운영과 형식 변경(8절). 보내기 전 사전 답변·정리판·독립 검토, 구현 차이 네 가지 처리(9절). 페이지 번호와 링크 글자(4절). 고정 번역(7절). 고객사가 읽는 부분에서 사람 이름·내부 ID 금지(5절) |
 | 0.1 | 처음 작성 |

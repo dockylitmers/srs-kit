@@ -8,8 +8,9 @@ description: 고객사와 합의하는 SRS(요구사항 명세서)를 srs-kit �
 고객사와 합의한 범위 기준선으로 SRS를 쓰고 관리한다. 판정 규칙은 하나다: **확인된 SRS와 다르면 버그, 없으면 변경 요청.**
 
 - 키트 위치: `$SRS_KIT`. 비어 있으면 `~/.claude/skills/srs` 링크가 가리키는 폴더의 상위 폴더. 도구: `$SRS_KIT/bin/srs` (Node.js 18+, 의존성 없음).
-- 기준: `$SRS_KIT/STANDARD.md`(쓰는 법, 기준 버전 0.2), `$SRS_KIT/PROCESS.md`(순서). 작업 전에 해당 절을 읽는다.
-- 템플릿: `$SRS_KIT/templates/` (페이지, 예시 기능, 고객사 메시지, 작업 세션 지시서: 내용 작성·구현 대조·사전 답변·독립 검토·번역·사이트). 문서 사이트 코드가 있으면 `$SRS_KIT/web/README.md`(공개본에는 `web/`이 없을 수 있다).
+- 기준: `$SRS_KIT/STANDARD.md`(쓰는 법, 기준 버전은 그 파일 맨 위), `$SRS_KIT/PROCESS.md`(순서). 작업 전에 해당 절을 읽는다.
+- 템플릿: `$SRS_KIT/templates/` (페이지, 예시 기능, 고객사 메시지, 작업 세션 지시서: 내용 작성·구현 대조·사전 답변·독립 검토·번역·사이트).
+- 문서 사이트: `$SRS_KIT/SITE.md`(사이트가 갖출 것). 사이트 코드가 있으면 `$SRS_KIT/web/README.md`(공개본에는 `web/`이 없을 수 있다. 그때는 SITE.md대로 만든다).
 
 ## 언제 쓰나
 
@@ -17,13 +18,14 @@ description: 고객사와 합의하는 SRS(요구사항 명세서)를 srs-kit �
 | --- | --- |
 | 새 프로젝트에 SRS를 세팅, 근거 문서 받기 | 아래 "온보딩" |
 | 온보딩을 이어서(읽기 전 출처가 있음) | 아래 "온보딩" 3단계부터 |
-| 기존 SRS가 있는 프로젝트에 도입 | PROCESS.md "기존 SRS가 있는 프로젝트에 들일 때" |
+| 기존 SRS가 있는 프로젝트에 도입 | PROCESS.md "기존 SRS가 있는 프로젝트에 들일 때". 첫 검사 뒤 `srs check --save-baseline`, 이후 `srs check --baseline` |
 | 기능·정책 페이지를 쓰거나 고침 | 아래 "갱신" |
 | 고객사에 물을지 내부에서 정할지 나눔 | STANDARD.md 3.1절, 아래 "누가 정하나" |
 | 고객사 답, 확인, 변경 요청을 반영 | STANDARD.md 9절 |
 | 고객사에 확인 요청을 보냄 | PROCESS.md 4단계(사전 답변 → 정리판 → 독립 검토 → 발송) |
 | 여러 변경을 한 번에 냄 | PROCESS.md "판 운영" |
-| SRS와 구현 대조 | PROCESS.md 3단계, `templates/briefs/impl-check.md` |
+| SRS와 구현 대조 | PROCESS.md 3단계, `templates/briefs/impl-check.md`. 보고서는 `srs sync impl --from <보고서> --commit <SHA>`로 옮긴다 |
+| 문서 사이트 만들기·고치기 | `SITE.md`, `templates/briefs/site.md` |
 | 검수 요청 | 아래 "검수", `templates/briefs/review.md` |
 
 ## 온보딩 ("SRS 온보딩", "SRS 시작", "SRS 온보딩 이어서")
@@ -66,7 +68,7 @@ Claude Code 첫 실행처럼 **한 번에 하나씩** 묻는다. 질문은 한�
 
 ## 세팅 (PROCESS.md 0~2단계)
 
-1. `srs init <저장소> --name "<프로젝트>"` → `docs/srs` 뼈대와 `srs.config.json`. 사이트까지: `--web <앱 폴더>` 후 `web/README.md`의 "합칠 것".
+1. `srs init <저장소> --name "<프로젝트>"` → `docs/srs` 뼈대와 `srs.config.json`. 사이트까지: `web/`이 있으면 `--web <앱 폴더>` 후 `web/README.md`의 "합칠 것", 없으면 `SITE.md`대로 사이트 세션에 맡긴다.
 2. 고객사와 합의 방식(확인 요청 위치, 확인 담당, 고객사에 묻는 범위, 댓글 확인 요일·시각, 회신 기한, QA 판정 규칙, 변경 요청 절차)을 정해 `overview`의 "합의 방식"에 적는다. 고객사 발송은 사람이 승인한다.
 3. 출처 전수 확인: 고객 소통 도구의 페이지 트리 전체와 이슈 트래커에 걸린 고객 소통 도구 링크를 모두 모아 `baseline/sources`에 한 행씩. 묶음별 전체 수 = 넣은 수.
 4. 기능마다 `srs new feature <slug> --title "..." --code ABC`, 여러 기능에 걸친 규칙은 `srs new policy ...`.
@@ -79,7 +81,7 @@ Claude Code 첫 실행처럼 **한 번에 하나씩** 묻는다. 질문은 한�
 
 1. 고칠 것을 "다음 판 목록"에 쌓는다(페이지, 무엇을, 근거).
 2. 기준 커밋을 정한다. 이후 커밋은 다음 판.
-3. 목록을 반영한다. 길면 단계마다 패치 파일을 남긴다. 새 규칙 ID가 생기면 `srs sync trace`, 제목이 바뀌면 `srs sync links`.
+3. 목록을 반영한다. 길면 단계마다 패치 파일을 남긴다. 새 규칙 ID가 생기면 `srs sync trace`, 제목이 바뀌면 `srs sync links`, 구현 상태가 바뀌었으면 `srs sync impl`.
 4. `srs check --base <기준>` → 오류 0.
 5. `srs bump --edition --base <기준> --note "판 요약"` → 바뀐 페이지 전부가 한국어·영어 함께 같은 판 날짜.
 6. `baseline/confirmations`의 "판 이력"에 적는다.
@@ -119,7 +121,7 @@ Claude Code 첫 실행처럼 **한 번에 하나씩** 묻는다. 질문은 한�
 
 ## 검수
 
-1. `srs check` (CI나 커밋 전에는 `srs check --strict`, 판이면 `--base <기준>`). 결과를 오류·경고 유형별 개수로 보고한다.
+1. `srs check` (CI나 커밋 전에는 `srs check --strict`, 판이면 `--base <기준>`, 기준선 파일이 있으면 `--baseline`). 결과를 오류·경고 유형별 개수로 보고한다. 기준선으로 숨긴 수와 없어진 수도 함께.
 2. `srs status`로 페이지별 버전·번역·상태·`(제안)` 수·마지막 확인 버전을 본다.
 3. 고객사에 보내기 전에는 새 문맥의 검토자에게 맡긴다(`templates/briefs/review.md`). 코드와 결정 기록에 대조한다.
 4. 사람이 보는 것(STANDARD.md 10절):

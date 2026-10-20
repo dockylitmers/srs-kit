@@ -6,7 +6,7 @@ SRS는 **고객사와 합의한 범위 기준선**이다. 고객사가 기능별
 
 키트는 세 부분이다. 작성 기준과 운영 순서(문서), `srs` 명령 도구, 그리고 Claude Code 스킬(`skill/SKILL.md`)이다. 스킬을 설치하면 Claude가 이 기준과 도구로 SRS를 세팅·작성·검수한다.
 
-버전: 0.3 (바뀐 것은 [STANDARD.md](STANDARD.md) 맨 끝 "이 기준의 변경 이력").
+버전: 0.4 (바뀐 것은 [STANDARD.md](STANDARD.md) 맨 끝 "이 기준의 변경 이력").
 
 ## Claude가 이 저장소를 설치할 때
 
@@ -23,12 +23,13 @@ SRS는 **고객사와 합의한 범위 기준선**이다. 고객사가 기능별
 | --- | --- |
 | [STANDARD.md](STANDARD.md) | 작성 기준: 원칙, 출처 우선순위, 문서 구성, 위험 기반 상세 수준, 기능 페이지 양식, 언어, 버전, 고객사 확인·변경 요청, 체크리스트 |
 | [PROCESS.md](PROCESS.md) | 세팅·운영 순서: 세팅 → 출처 전수 확인 → 초안 → 구현 대조 → 고객사 확인 → 기준선 → 변경 관리, 기존 SRS 도입, 세션 나누기 |
+| [SITE.md](SITE.md) | 문서 사이트가 갖출 것: 주소, 언어 전환, 버전 드롭다운, 표시 배지, 표, 검색 차단, 판이 쌓여도 버티는 빌드 |
 | [templates/docs/srs/](templates/docs/srs/) | 새 프로젝트에 복사하는 `docs/srs` 뼈대(한국어·영어 페이지, `meta.json`) |
 | [templates/pages/](templates/pages/) | 기능·정책 페이지 틀(`srs new`가 쓴다) |
 | [templates/examples/](templates/examples/) | 예시: 기능 페이지 "주문 취소와 환불", 그 출처 목록·추적표·용어집 |
 | [templates/messages/](templates/messages/) | 고객사에 올리는 글: 확인 요청, 변경 요청 답변 |
 | [templates/briefs/](templates/briefs/) | 작업 세션 지시서: 내용 작성, 구현 대조, 사전 답변, 독립 검토, 번역, 문서 사이트 |
-| `web/` | 문서 사이트 코드(Next.js + fumadocs). 공개 저장소에는 아직 없다 |
+| `web/` | 문서 사이트 코드(Next.js + fumadocs). 공개 저장소에는 아직 없다. 없으면 [SITE.md](SITE.md)대로 사이트 세션이 만든다 |
 | [bin/srs](bin/srs) | 명령줄 도구: `init`, `new`, `bump`, `check`, `status`, `sync` |
 | [skill/SKILL.md](skill/SKILL.md) | Claude Code 스킬 원본 |
 
@@ -110,6 +111,9 @@ srs bump --edition --base origin/main --note "10월 3주 결정 반영" --note-e
 srs sync trace
 srs check --base origin/main
 srs status
+
+# 5. 구현 대조 보고서(templates/briefs/impl-check.md)를 추적표와 구현 상태 페이지에 옮긴다
+srs sync impl --from reports/impl-check.md --commit 1a2b3c4
 ```
 
 ## 명령
@@ -127,9 +131,10 @@ srs status
 | `srs new <feature\|policy> <slug> --title --code [--description] [--en-title]` | 기능·정책 페이지를 한국어·영어로 만들고 `meta.json`에 넣는다. 같은 `code`가 있으면 멈춘다 |
 | `srs bump <페이지> [--note] [--date] [--lang ko\|en\|all] [--from]` | 한국어 파일을 지금 version 폴더에, 영어 파일을 영어 version 폴더에 남기고(이미 같은 내용이 있으면 건너뜀) 한국어 version을 올린다. 확인됨 페이지는 `draft`로 돌린다. `--lang en`은 번역을 마친 뒤 영어 version을 한국어 버전에 맞춘다. `--from`은 version이 없는 기존 페이지의 지금 날짜 |
 | `srs bump --edition --base <커밋> --note [--note-en] [--date] [--dry-run]` | 판 단위로 올린다. 고친 **뒤에** 실행한다. 기준 커밋 뒤 바뀐 페이지를 모두 같은 날짜로 한·영 함께 올리고, 기준 커밋의 파일을 예전 버전으로 남긴다(`generatedPages`는 남기지 않음). 확인됨 페이지는 `draft`로 |
-| `srs check [--base <커밋>] [--json] [--strict] [--verbose] [--limit N]` | 검사. 오류가 있으면 종료 코드 1(`--strict`면 경고도 1). `--base`를 주면 기준 커밋과 대조하는 검사를 더한다 |
+| `srs check [--base <커밋>] [--json] [--strict] [--verbose] [--limit N] [--baseline\|--save-baseline]` | 검사. 오류가 있으면 종료 코드 1(`--strict`면 경고도 1). `--base`를 주면 기준 커밋과 대조하는 검사를 더한다. `--save-baseline`은 지금 오류·경고를 기준선 파일(`checkBaseline`)에 남기고, `--baseline`은 기준선에 있던 것을 숨겨 그 뒤에 생긴 것만 보여 준다(종료 코드도 그것만으로) |
 | `srs status [--all]` | 기능·정책 페이지의 버전, 번역, 상태, `(제안)` 수, 마지막 확인 버전, 규칙 수를 마크다운 표로 출력한다(`baseline/confirmations`에 붙여 넣는다) |
 | `srs sync trace [--dry-run] [--verbose]` | 추적표에 빠진 규칙 행을 넣고 출처·요약 칸을 페이지에 맞춘다. 다른 칸(구현 상태, QA 결과)은 그대로 두고, 없어진 규칙 행은 알리기만 한다 |
+| `srs sync impl [--from <보고서>] [--commit <SHA>] [--date] [--prune] [--dry-run]` | 구현 대조 결과를 옮긴다. `--from` 보고서(`규칙 ID`·`상태` 열이 있는 표)의 상태를 추적표 구현 상태 열에 쓰고(번역 추적표는 고정 번역), 구현 상태 페이지의 기준·요약 숫자를 추적표에서 다시 세고, "다르게 구현됨"·"미구현" 표에 빠진 행을 넣는다. 상태가 같은 칸과 있는 행의 글(처리 방향 등)은 고치지 않는다. 상태가 바뀐 행은 알리기만 하고, `--prune`이면 지운다 |
 | `srs sync links [--dry-run]` | 링크 글자를 가리키는 페이지 제목으로 바꾸고 한국어 조사(을/를, 이/가, 은/는, 과/와, 으로/로)를 맞춘다 |
 
 공통 옵션: `--root <저장소>`(기본: `srs.config.json`이 있는 가장 가까운 상위 폴더), `--config <파일>`.
@@ -141,11 +146,11 @@ srs status
 | 버전 | `version` 있음·형식, 영어 `version`이 한국어보다 늦지 않음(같으면 최신, 이르면 "번역 뒤처짐", `allowStaleTranslations: false`면 오류), 예전 버전 폴더 이름·날짜, 현재와 같은 날짜의 예전 파일이 현재와 다름(bump 없이 고침) |
 | 한·영 짝 | 같은 버전이면 규칙 ID와 순서, 예시 ID, 확인 요청 행 수, `(제안)`·`(준비 필요)` 개수가 같음 |
 | 기준 커밋(`--base`) | 버전을 올린 페이지의 versionNote가 바뀜, 예전 버전 파일이 기준 커밋의 파일과 같음, 내용은 바뀌었는데 버전이 같은 페이지(참고) |
-| 파일 구조 | 영어 짝, `meta.json`의 페이지 목록, `meta.en.json`, 최상위 예약어 `en`·`v`, 깨진 상대 링크, 문서 사이 절대 링크 |
+| 파일 구조 | 영어 짝, `meta.json`의 페이지 목록(`guidePages`는 빠져도 됨), `meta.en.json`, 최상위 예약어 `en`·`v`, 깨진 상대 링크, 문서 사이 절대 링크 |
 | 본문 | `# 제목`·"최종 수정일" 줄, 쓰지 않는 말(STANDARD 5절, 설정, 용어집의 "쓰지 않는 말"), 템플릿 자리 표시, 비밀값으로 보이는 문자열, 표시 철자(`(제안: …)`, `(준비필요)`), MDX를 깨는 중괄호 |
 | 번호·링크 | `numbering`이 켜져 있으면 개요 페이지 표 번호 = 제목 번호, 최상위 페이지가 표에 있음, 사이드바 번호 순서. `linkText: "title"`이면 링크 글자 = 대상 페이지 제목 |
 | 고객사가 읽는 부분 | 코드 경로, 코드 이름, 이슈 번호, 진행 상태 열, 쉬운 말(문자, 앱 푸시, 이메일) |
-| 규칙 | ID 중복, 페이지 `code`로 시작, 출처 열·출처 ID가 출처 목록에 있음, 숫자 규칙의 예시, "~하면"의 "아니면", 추적표와 ID 일치 |
+| 규칙 | ID 중복, 페이지 `code`로 시작, 출처 열·출처 ID가 출처 목록에 있음, 숫자 규칙의 예시, "~하면"의 "아니면", 추적표와 ID 일치, 추적표 구현 상태가 정해진 말(구현됨 / 다르게 구현됨 / 미구현 / 범위에서 빠짐, 뒤에 설명은 붙여도 됨) |
 | 기능·정책 양식 | 필수 절, `status`·`code`, 확인됨 페이지에 `(제안)` 없음, 현재 버전의 확인 기록 |
 | 출처 목록 | ID 열, 모든 행의 반영 위치(링크 또는 "반영 없음: 이유", 온보딩에서 넣은 "읽기 전"은 경고), ID 중복, 넣은 뒤 원본이 바뀜(경고), 보관함 사본이 git에 올라감(오류) |
 
@@ -159,12 +164,12 @@ srs status
 | `primaryLanguage` / `translations` | `ko` / `["en"]` | 원문 언어와 번역 언어(`<경로>.<언어>.mdx`) |
 | `requireTranslations` | `true` | 번역이 없으면 오류(false면 경고) |
 | `legacyVersion` | `null` | `version`이 없는 페이지를 이 날짜로 본다(기존 SRS 도입 때). 사이트의 `SRS_BASELINE_VERSION`과 같게 |
-| `pages` | `sources: baseline/sources`, `traceability: baseline/traceability`, `glossary: glossary` | 특별한 페이지의 경로 |
+| `pages` | `sources: baseline/sources`, `traceability: baseline/traceability`, `implementationStatus: baseline/implementation-status`, `glossary: glossary` | 특별한 페이지의 경로 |
 | `internalPages` | `["baseline/"]` | 팀이 관리하는 페이지(경로 또는 `폴더/`). 고객사가 읽는 부분 검사를 하지 않고, 규칙 ID를 정의하지 않는다 |
 | `formDirs` | `{ "features": "feature", "policies": "policy" }` | 기능·정책 양식으로 검사할 폴더 |
 | `ruleIdPattern` / `sourceIdPattern` | `[A-Z][A-Z0-9]*(?:[-.][A-Z0-9]+)*-\d{2,4}` / `SRC-\d{3,4}` | 규칙 ID와 출처 ID 형식(정규식) |
 | `codePattern` | `^[A-Z][A-Z0-9]{1,4}$` | 페이지 frontmatter `code` 형식(정규식). 기존 문서의 ID 체계를 그대로 쓸 때 바꾼다(예: `^(?:[A-Z][A-Z0-9]{1,4}|FR-3\.\d{1,2})$`) |
-| `guidePages` | `[]` | 규칙 없이 다른 페이지를 안내만 하는 페이지. 기능·정책 양식 검사에서 뺀다(경로 또는 "폴더/" 접두어) |
+| `guidePages` | `[]` | 규칙 없이 다른 페이지를 안내만 하는 페이지. 기능·정책 양식 검사에서 빼고, 사이드바(`meta.json`)에 없어도 알리지 않는다(경로 또는 "폴더/" 접두어) |
 | `docBasePaths` | `["/docs/srs"]` | 문서 사이트 주소(이 주소로 시작하는 절대 링크를 알린다) |
 | `terms` / `allowTerms` | `{ko: [], en: []}` / `[]` | 프로젝트에서 더 금지할 말, 허용할 말 |
 | `assets` | `urlPrefix: /srs-assets/`, `dir: null` | `dir`을 주면 그 주소로 시작하는 이미지 파일이 있는지 본다 |
@@ -174,9 +179,10 @@ srs status
 | `linkText` | `null`(템플릿은 `"title"`) | `"title"`이면 링크 글자를 대상 페이지 제목과 대조한다 |
 | `linkTextAllow` | `[]` | 링크 글자 검사·`sync links`에서 그대로 두는 글자(화면 이름처럼 페이지가 아닌 것을 가리키는 링크) |
 | `sourcesDir` | `srs-sources` | 근거 파일 보관함: 사본(git 제외)과 지문 기록 `manifest.json`(git 포함) |
-| `traceSummaryLength` | `80` | `sync trace`가 추적표 요약 칸에 넣는 글자 수 |
+| `traceSummaryLength` | `80` | `sync trace`가 추적표 요약 칸에, `sync impl`이 구현 상태 표 SRS 칸에 넣는 글자 수 |
+| `checkBaseline` | `srs-check-baseline.json` | `check --save-baseline`이 쓰고 `--baseline`이 읽는 기준선 파일. 커밋해 팀이 같이 쓴다 |
 
 
 ## 기존 SRS가 있는 프로젝트
 
-경로를 바꾸지 않고 덧입힌다. `srs.config.json`의 `pages`, `formDirs`, `internalPages`에 기존 경로를 적고, 기존 전체를 첫 예전 버전으로 남긴 뒤 `legacyVersion`을 그 날짜로 둔다. 자세한 순서는 [PROCESS.md](PROCESS.md) "기존 SRS가 있는 프로젝트에 들일 때". 첫 `srs check`는 실패가 많은 것이 정상이다. 페이지를 고칠 때마다 그 페이지의 오류를 없앤다.
+경로를 바꾸지 않고 덧입힌다. `srs.config.json`의 `pages`, `formDirs`, `internalPages`에 기존 경로를 적고, 기존 전체를 첫 예전 버전으로 남긴 뒤 `legacyVersion`을 그 날짜로 둔다. 자세한 순서는 [PROCESS.md](PROCESS.md) "기존 SRS가 있는 프로젝트에 들일 때". 첫 `srs check`는 실패가 많은 것이 정상이다. `srs check --save-baseline`으로 지금 결과를 기준선으로 남기고, 그 뒤로는 `srs check --baseline`으로 새로 생긴 것만 막는다. 페이지를 고칠 때마다 그 페이지의 오류·경고를 없애고 기준선을 다시 저장해 줄여 간다.
